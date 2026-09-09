@@ -1,0 +1,87 @@
+#pragma once
+
+#include <juce_dsp/juce_dsp.h>
+#include <vector>
+#include <cstdint>
+
+namespace helix
+{
+
+/** Time-domain PSOLA pitch shifter.
+
+    Grains of two periods are lifted from the input at pitch-synchronous marks
+    and overlap-added at a different spacing. Because the grain *content* is
+    never stretched, the spectral envelope - the formants - survives untouched;
+    only the pulse rate changes. That is why this sounds like a person singing a
+    different note rather than a sped-up tape, and it is why every classic
+    hardware pitch corrector works this way.
+
+    Formant motion is then reintroduced deliberately, by resampling the grain
+    content itself (see formantRatio), which is how throat modelling and the
+    "formant correction off" chipmunk behaviour are produced.
+*/
+class PsolaShifter
+{
+public:
+    /** @param lowestSupportedHz  size buffers for the lowest pitch the plugin
+                                  will ever be asked to track, so that later
+                                  range changes never reallocate. */
+    void prepare (double sampleRate, float lowestSupportedHz, int maxBlockSize);
+
+    /** Narrows the working range. Recomputes grain size and latency only - no
+        allocation - so the input type can change while audio is running. */
+    void setMinFrequency (float hz) noexcept;
+
+    void reset() noexcept;
+
+    /** Fixed algorithmic delay, in samples. PSOLA needs the input that a grain
+        will read *after* the synthesis mark it lands on, so the delay scales
+        with the longest period in the configured range. */
+    int getLatencySamples() const noexcept { return latency; }
+
+    /** @param pitchRatio     output f0 / input f0. >1 raises pitch.
+        @param formantRatio   spectral envelope scaling. 1.0 leaves formants put.
+        @param periodSamples  current input period (fs / f0).
+        @param voiced         false crossfades to the delayed dry signal. */
+    void process (const float* input, float* output, int numSamples,
+                  float pitchRatio, float formantRatio,
+                  float periodSamples, bool voiced) noexcept;
+
+private:
+    void  emitGrain (double analysisMark, double synthMark, float period, float formantRatio) noexcept;
+    double refineMark (double predicted, float period) noexcept;
+    float readInput (double absPos) const noexcept;
+
+    inline int  wrapIn  (int64_t p) const noexcept { return (int) (p & inMask); }
+    inline int  wrapOut (int64_t p) const noexcept { return (int) (p & outMask); }
+
+    double fs = 44100.0;
+    int    latency        = 0;
+    int    maxPeriod      = 512;   // current range
+    int    capacityPeriod = 512;   // what the buffers were sized for
+
+    std::vector<float> inBuf;
+    int64_t inMask = 0;
+    int64_t inWritePos = 0;      // total samples ever written
+
+    std::vector<float> outAccum; // overlap-added signal
+    std::vector<float> winAccum; // summed window, used to normalise the OLA
+    int64_t outMask = 0;
+    int64_t outClearedTo = 0;    // accumulators are zeroed lazily up to here
+
+    double analysisPos = 0.0;    // absolute input position of the current mark
+    double synthPos    = 0.0;    // absolute output position of the next grain
+    bool   primed      = false;
+
+    float lastPeriod = 200.0f;
+    float voicedGain = 0.0f;     // smoothed dry/wet crossfade
+
+    std::vector<float> window;   // Hann, indexed by normalised grain phase
+    int windowSize = 0;
+
+    // Correlation scores for one mark search, sized at prepare() so the
+    // epoch refinement never allocates on the audio thread.
+    std::vector<double> corrScores;
+};
+
+} // namespace helix

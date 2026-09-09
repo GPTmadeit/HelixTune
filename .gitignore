@@ -1,0 +1,7 @@
+build/
+out/
+.vs/
+.vscode/
+*.user
+JuceLibraryCode/
+libs/JUCE/
