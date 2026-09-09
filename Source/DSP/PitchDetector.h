@@ -39,12 +39,29 @@ FrequencyRange rangeForInputType (InputType t);
 class PitchDetector
 {
 public:
+    /** One local minimum of the normalised difference function - a plausible
+        period. Octave errors show up here as a second candidate at 2x or 1/2x
+        the true period with a nearly identical cost, which is exactly the
+        ambiguity the stabiliser resolves using time context. */
+    struct Candidate
+    {
+        float periodSamples = 0.0f;
+        float frequencyHz   = 0.0f;
+        float cost          = 1.0f;   // cmnd value; lower is more periodic
+    };
+
+    static constexpr int maxCandidates = 6;
+
     struct Result
     {
         float frequencyHz = 0.0f;
         float midiNote    = 0.0f;   // fractional, 69 = A440
         float confidence  = 0.0f;   // 1 - aperiodicity, in [0,1]
         bool  voiced      = false;
+
+        float rms         = 0.0f;
+        int   numCandidates = 0;
+        Candidate candidates[maxCandidates] { };
     };
 
     void prepare (double sampleRate);
@@ -81,6 +98,7 @@ private:
     void cumulativeMeanNormalise (const Config& c) noexcept;
     int  absoluteThreshold (const Config& c, float threshold) const noexcept;
     float parabolicRefine (const Config& c, int tauEstimate) const noexcept;
+    void collectCandidates (const Config& c, float threshold, int tauYin, Result& out) const noexcept;
 
     double fs = 44100.0;
     int current = (int) InputType::altoTenor;

@@ -45,6 +45,23 @@ void HelixTuneProcessor::buildCache()
     cache.vibFormantAmount = get (params::vibFormantAmount);
     cache.graphMode        = get (params::graphMode);
     cache.midiTarget       = get (params::midiTarget);
+    cache.pitchSmooth      = get (params::pitchSmooth);
+    cache.sibilance        = get (params::sibilance);
+    cache.autoKey          = get (params::autoKey);
+    cache.midiOut          = get (params::midiOut);
+    cache.harmLevel        = get (params::harmLevel);
+    cache.harmSpread       = get (params::harmSpread);
+
+    for (int v = 0; v < params::numHarmonyVoices; ++v)
+    {
+        auto& hv = cache.harmony[(size_t) v];
+        hv.enable  = apvts.getRawParameterValue (params::harmonyID (params::harmEnable, v));
+        hv.degrees = apvts.getRawParameterValue (params::harmonyID (params::harmDegrees, v));
+        hv.level   = apvts.getRawParameterValue (params::harmonyID (params::harmVoiceLevel, v));
+        hv.pan     = apvts.getRawParameterValue (params::harmonyID (params::harmPan, v));
+        hv.formant = apvts.getRawParameterValue (params::harmonyID (params::harmFormant, v));
+        hv.detune  = apvts.getRawParameterValue (params::harmonyID (params::harmDetune, v));
+    }
 }
 
 bool HelixTuneProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -131,6 +148,33 @@ CorrectionEngine::Settings HelixTuneProcessor::buildSettings() const noexcept
     s.mix        = cache.mix->load() * 0.01f;
     s.outputGain = juce::Decibels::decibelsToGain (cache.outputGain->load());
 
+    s.pitchSmoothing = cache.pitchSmooth->load() * 0.01f;
+    s.sibilanceGuard = cache.sibilance->load() * 0.01f;
+
+    // --- harmony ----------------------------------------------------------
+    const float spread = cache.harmSpread->load() * 0.01f;
+    s.harmony.level = cache.harmLevel->load() * 0.01f;
+    s.harmony.anyEnabled = false;
+
+    for (int v = 0; v < params::numHarmonyVoices; ++v)
+    {
+        const auto& hv = cache.harmony[(size_t) v];
+        auto& out = s.harmony.voices[(size_t) v];
+
+        out.enabled     = hv.enable->load() > 0.5f;
+        out.degrees     = (int) hv.degrees->load();
+        out.level       = hv.level->load() * 0.01f;
+        out.pan         = juce::jlimit (-1.0f, 1.0f, hv.pan->load() * 0.01f);
+        out.formant     = hv.formant->load();
+        out.detuneCents = hv.detune->load();
+
+        // Voices staggered by a few milliseconds each: four exactly aligned
+        // copies of one voice read as a chorus effect, not as a section.
+        out.delayMs = spread * (6.0f + 5.0f * (float) v);
+
+        s.harmony.anyEnabled = s.harmony.anyEnabled || out.enabled;
+    }
+
     return s;
 }
 
@@ -205,6 +249,7 @@ void HelixTuneProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     transportPlaying.store (playing, std::memory_order_relaxed);
 
     const auto settings = buildSettings();
+    const bool settings_autoKey = cache.autoKey->load() > 0.5f;
 
     const bool haveMidiTarget = settings.midiTarget && lastHeldNote >= 0;
     const float midiTargetMidi = haveMidiTarget ? (float) lastHeldNote : 0.0f;
@@ -214,10 +259,87 @@ void HelixTuneProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     freeRunningTime = timeSeconds + (double) buffer.getNumSamples() / currentSampleRate;
 
+    // --- Auto-Key ---------------------------------------------------------
+    if (settings_autoKey)
+    {
+        const auto k = engine.getKeyEstimate();
+
+        if (k.valid && k.confidence > 0.35f)
+        {
+            const int scaleIndex = k.minor ? 2 : 1;   // Minor / Major in the scale table
+
+            if (k.rootPitchClass != appliedKeyRoot || scaleIndex != appliedKeyScale)
+            {
+                pendingKeyRoot.store (k.rootPitchClass, std::memory_order_relaxed);
+                pendingKeyScale.store (scaleIndex, std::memory_order_relaxed);
+                triggerAsyncUpdate();
+            }
+        }
+    }
+
+    emitPitchMidi (midi, buffer.getNumSamples());
+
     // Input type changes the grain size and therefore the algorithmic delay.
     // Hosts expect to be told rather than to discover it.
     if (engine.consumeLatencyChanged())
         setLatencySamples (engine.getLatencySamples());
+}
+
+void HelixTuneProcessor::handleAsyncUpdate()
+{
+    const int root = pendingKeyRoot.load (std::memory_order_relaxed);
+    const int scaleIndex = pendingKeyScale.load (std::memory_order_relaxed);
+
+    if (root < 0 || scaleIndex < 0)
+        return;
+
+    appliedKeyRoot = root;
+    appliedKeyScale = scaleIndex;
+
+    if (auto* p = apvts.getParameter (params::key))
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) root));
+
+    if (auto* p = apvts.getParameter (params::scale))
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) scaleIndex));
+}
+
+void HelixTuneProcessor::emitPitchMidi (juce::MidiBuffer& midi, int numSamples) noexcept
+{
+    if (cache.midiOut->load() <= 0.5f)
+    {
+        emittedMidiNote = -1;
+        return;
+    }
+
+    // Once we are generating pitch MIDI, incoming events are not ours to pass
+    // on - a host routing this to an instrument wants the sung note, not a
+    // copy of whatever came in.
+    midi.clear();
+
+    const bool voiced = engine.isLiveVoiced();
+    const float note = engine.getLiveMidiNote();
+    const int rounded = (voiced && note > 0.0f)
+                      ? juce::jlimit (0, 127, (int) std::lround (note)) : -1;
+
+    if (rounded == emittedMidiNote)
+        return;
+
+    if (emittedMidiNote >= 0)
+        midi.addEvent (juce::MidiMessage::noteOff (1, emittedMidiNote), 0);
+
+    if (rounded >= 0)
+    {
+        midi.addEvent (juce::MidiMessage::noteOn (1, rounded, (juce::uint8) 100), 0);
+
+        // Pitch bend carries the cents the note is actually sung at, so a
+        // receiving instrument can follow the performance rather than a grid.
+        const float cents = note - (float) rounded;
+        const int bend = juce::jlimit (0, 16383, 8192 + (int) (cents * 4096.0f));
+        midi.addEvent (juce::MidiMessage::pitchWheel (1, bend), 0);
+    }
+
+    emittedMidiNote = rounded;
+    juce::ignoreUnused (numSamples);
 }
 
 juce::AudioProcessorEditor* HelixTuneProcessor::createEditor()

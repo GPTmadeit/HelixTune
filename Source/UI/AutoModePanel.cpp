@@ -27,6 +27,8 @@ AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
     detuneKnob   .attach (state, params::detune);
 
     trackingKnob .attach (state, params::tracking);
+    stabilityKnob.attach (state, params::pitchSmooth);
+    sibilanceKnob.attach (state, params::sibilance);
     throatKnob   .attach (state, params::throatLength);
 
     vibRateKnob   .attach (state, params::vibRate);
@@ -40,14 +42,15 @@ AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
     ignoreVibToggle.attach (state, params::targetIgnoresVib);
     classicToggle  .attach (state, params::classicMode);
     formantToggle  .attach (state, params::formantCorrect);
+    midiOutToggle  .attach (state, params::midiOut);
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &keySelector, &scaleSelector, &inputSelector, &shapeSelector,
              &retuneKnob, &flexKnob, &humanizeKnob, &natVibKnob, &transposeKnob, &detuneKnob,
-             &trackingKnob, &throatKnob,
+             &trackingKnob, &stabilityKnob, &sibilanceKnob, &throatKnob,
              &vibRateKnob, &vibVarKnob, &vibDelayKnob, &vibOnsetKnob,
              &vibPitchKnob, &vibAmpKnob, &vibFormantKnob,
-             &ignoreVibToggle, &classicToggle, &formantToggle })
+             &ignoreVibToggle, &classicToggle, &formantToggle, &midiOutToggle })
     {
         addAndMakeVisible (c);
     }
@@ -125,7 +128,7 @@ void AutoModePanel::resized()
 
     // --- row 3: detection / formant / vibrato -----------------------------
     auto row3 = area;
-    auto detectArea = row3.removeFromLeft (200);
+    auto detectArea = row3.removeFromLeft (312);
     row3.removeFromLeft (gap);
     auto formantArea = row3.removeFromLeft (190);
     row3.removeFromLeft (gap);
@@ -137,9 +140,18 @@ void AutoModePanel::resized()
     {
         auto inner = detectArea.reduced (10);
         inner.removeFromTop (sectionHeader);
-        inputSelector.setBounds (inner.removeFromTop (42));
+
+        auto top = inner.removeFromTop (42);
+        inputSelector.setBounds (top.removeFromLeft (168));
+        top.removeFromLeft (gap);
+        midiOutToggle.setBounds (top.withSizeKeepingCentre (top.getWidth(), 24));
+
         inner.removeFromTop (gap);
-        trackingKnob.setBounds (inner.removeFromLeft (86));
+
+        NeonKnob* knobs[] = { &trackingKnob, &stabilityKnob, &sibilanceKnob };
+        const int w = inner.getWidth() / 3;
+        for (int i = 0; i < 3; ++i)
+            knobs[i]->setBounds (inner.removeFromLeft (w).reduced (3, 0));
     }
 
     {

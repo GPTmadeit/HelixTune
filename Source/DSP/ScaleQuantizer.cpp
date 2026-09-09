@@ -97,6 +97,75 @@ bool ScaleQuantizer::hasAnyTarget() const noexcept
     return false;
 }
 
+int ScaleQuantizer::getScaleTones (int* destination, int capacity) const noexcept
+{
+    const auto& sc = kScales[(size_t) scaleIndex];
+    int count = 0;
+
+    for (int s = 0; s < 12 && count < capacity; ++s)
+    {
+        if (! ((sc.mask >> s) & 1))
+            continue;
+
+        if (noteStates[(size_t) (((root + s) % 12 + 12) % 12)] == NoteState::removed)
+            continue;
+
+        destination[count++] = s;
+    }
+
+    return count;
+}
+
+float ScaleQuantizer::transposeByScaleDegrees (float midiNote, int degrees) const noexcept
+{
+    if (degrees == 0)
+        return midiNote;
+
+    int tones[12];
+    const int numTones = getScaleTones (tones, 12);
+
+    if (numTones == 0)
+        return midiNote + (float) degrees;   // nothing legal; fall back to semitones
+
+    const auto& sc = kScales[(size_t) scaleIndex];
+
+    // Where does the input sit, counted in scale steps from the root?
+    const int octave = (int) std::floor ((midiNote - (float) root) / 12.0f);
+    const float rel = midiNote - (float) root - 12.0f * (float) octave;
+
+    int nearest = 0;
+    float bestDistance = 1.0e30f;
+    for (int i = 0; i < numTones; ++i)
+    {
+        const float d = std::abs ((float) tones[i] - rel);
+        if (d < bestDistance)
+        {
+            bestDistance = d;
+            nearest = i;
+        }
+    }
+
+    const int absoluteIndex = octave * numTones + nearest + degrees;
+
+    // Floor division, so negative intervals land in the octave below rather
+    // than truncating toward zero.
+    int targetOctave = absoluteIndex / numTones;
+    int targetStep = absoluteIndex - targetOctave * numTones;
+    if (targetStep < 0)
+    {
+        targetStep += numTones;
+        --targetOctave;
+    }
+
+    const int semitone = tones[targetStep];
+    float result = (float) root + 12.0f * (float) targetOctave + (float) semitone;
+
+    if (sc.centOffsets != nullptr)
+        result += sc.centOffsets[semitone] * 0.01f;
+
+    return juce::jlimit (0.0f, 127.0f, result);
+}
+
 ScaleQuantizer::Target ScaleQuantizer::findTarget (float inputMidiNote) const noexcept
 {
     Target result;

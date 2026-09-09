@@ -41,6 +41,33 @@ inline constexpr const char* vibFormantAmount= "vibFormantAmount";
 inline constexpr const char* graphMode       = "graphMode";
 inline constexpr const char* midiTarget      = "midiTarget";
 
+// --- advanced tracking / naturalness ---------------------------------------
+inline constexpr const char* pitchSmooth     = "pitchSmooth";
+inline constexpr const char* sibilance       = "sibilance";
+inline constexpr const char* autoKey         = "autoKey";
+inline constexpr const char* midiOut         = "midiOut";
+
+// --- harmony ---------------------------------------------------------------
+inline constexpr int numHarmonyVoices = 4;
+
+inline constexpr const char* harmLevel  = "harmLevel";
+inline constexpr const char* harmSpread = "harmSpread";
+
+/** Per-voice IDs are generated rather than listed, so adding a fifth voice is
+    a constant change instead of twenty-odd new declarations. The generated
+    strings are still stable and still persisted, so the naming must not move. */
+inline juce::String harmonyID (const char* base, int voiceIndex)
+{
+    return juce::String (base) + juce::String (voiceIndex + 1);
+}
+
+inline constexpr const char* harmEnable  = "harmEnable";
+inline constexpr const char* harmDegrees = "harmDegrees";
+inline constexpr const char* harmVoiceLevel = "harmVoiceLevel";
+inline constexpr const char* harmPan     = "harmPan";
+inline constexpr const char* harmFormant = "harmFormant";
+inline constexpr const char* harmDetune  = "harmDetune";
+
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
 juce::StringArray getKeyNames();

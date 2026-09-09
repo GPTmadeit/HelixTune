@@ -40,6 +40,28 @@ static juce::String centsSuffix (float v, int)   { return juce::String (v, 1) + 
 static juce::String percentSuffix (float v, int) { return juce::String (v, 0) + " %"; }
 static juce::String hzSuffix (float v, int)      { return juce::String (v, 2) + " Hz"; }
 
+/** Scale steps read as interval names, because "+2" means a third here and
+    nobody counts scale degrees from zero in their head. */
+static juce::String intervalName (int degrees, int)
+{
+    if (degrees == 0)
+        return "Unison";
+
+    static const char* names[] = { "8ve", "2nd", "3rd", "4th", "5th", "6th", "7th" };
+
+    const int mag = std::abs (degrees);
+    const int octaves = mag / 7;
+    const int step = mag % 7;
+
+    juce::String text (names[step]);
+    if (step == 0)
+        text = (octaves > 1) ? juce::String (octaves) + " 8ve" : juce::String ("8ve");
+    else if (octaves > 0)
+        text += " +" + juce::String (octaves) + "8ve";
+
+    return (degrees > 0 ? "+" : "-") + text;
+}
+
 juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
 {
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
@@ -120,6 +142,64 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     // --- mode -------------------------------------------------------------
     layout.add (std::make_unique<APB>   (pid (graphMode), "Graph Mode", false));
     layout.add (std::make_unique<APB>   (pid (midiTarget), "MIDI Target Notes", false));
+
+    // --- advanced tracking ------------------------------------------------
+    layout.add (std::make_unique<APF>   (pid (pitchSmooth), "Pitch Stability",
+                                         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 55.0f,
+                                         juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+    layout.add (std::make_unique<APF>   (pid (sibilance), "Sibilance Guard",
+                                         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 60.0f,
+                                         juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+    layout.add (std::make_unique<APB>   (pid (autoKey), "Auto-Key", false));
+    layout.add (std::make_unique<APB>   (pid (midiOut), "MIDI Pitch Out", false));
+
+    // --- harmony ----------------------------------------------------------
+    layout.add (std::make_unique<APF>   (pid (harmLevel), "Harmony Level",
+                                         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 70.0f,
+                                         juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+    layout.add (std::make_unique<APF>   (pid (harmSpread), "Harmony Spread",
+                                         juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 35.0f,
+                                         juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+
+    // Sensible opening chord: a third and a fifth up, an octave down, spread
+    // across the image, so switching harmony on immediately does something
+    // musical instead of nothing.
+    const int    defaultDegrees[numHarmonyVoices] = {  2,  4, -7,  7 };
+    const float  defaultPan[numHarmonyVoices]     = { -0.55f, 0.55f, -0.2f, 0.25f };
+    const float  defaultFormant[numHarmonyVoices] = { 1.06f, 0.94f, 1.12f, 0.9f };
+    const float  defaultDetune[numHarmonyVoices]  = { -6.0f, 5.0f, 8.0f, -9.0f };
+
+    for (int v = 0; v < numHarmonyVoices; ++v)
+    {
+        const auto suffix = juce::String (" ") + juce::String (v + 1);
+
+        layout.add (std::make_unique<APB> (
+            juce::ParameterID { harmonyID (harmEnable, v), 1 }, "Harmony" + suffix + " On",
+            v == 0));
+
+        layout.add (std::make_unique<APInt> (
+            juce::ParameterID { harmonyID (harmDegrees, v), 1 }, "Harmony" + suffix + " Interval",
+            -14, 14, defaultDegrees[v],
+            juce::AudioParameterIntAttributes().withStringFromValueFunction (intervalName)));
+
+        layout.add (std::make_unique<APF> (
+            juce::ParameterID { harmonyID (harmVoiceLevel, v), 1 }, "Harmony" + suffix + " Level",
+            juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 75.0f,
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+
+        layout.add (std::make_unique<APF> (
+            juce::ParameterID { harmonyID (harmPan, v), 1 }, "Harmony" + suffix + " Pan",
+            juce::NormalisableRange<float> (-100.0f, 100.0f, 0.1f), defaultPan[v] * 100.0f));
+
+        layout.add (std::make_unique<APF> (
+            juce::ParameterID { harmonyID (harmFormant, v), 1 }, "Harmony" + suffix + " Formant",
+            juce::NormalisableRange<float> (0.5f, 2.0f, 0.001f, 1.0f), defaultFormant[v]));
+
+        layout.add (std::make_unique<APF> (
+            juce::ParameterID { harmonyID (harmDetune, v), 1 }, "Harmony" + suffix + " Detune",
+            juce::NormalisableRange<float> (-50.0f, 50.0f, 0.1f), defaultDetune[v],
+            juce::AudioParameterFloatAttributes().withStringFromValueFunction (centsSuffix)));
+    }
 
     return layout;
 }

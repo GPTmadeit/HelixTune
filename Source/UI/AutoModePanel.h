@@ -48,6 +48,8 @@ private:
     NeonKnob detuneKnob    { "Detune",   colours::magenta };
 
     NeonKnob trackingKnob  { "Tracking", colours::violet };
+    NeonKnob stabilityKnob { "Stability", colours::violet };
+    NeonKnob sibilanceKnob { "Sibilance", colours::violet };
     NeonKnob throatKnob    { "Throat",   colours::lime };
 
     NeonKnob vibRateKnob    { "Rate",     colours::amber };
@@ -61,6 +63,7 @@ private:
     NeonToggle ignoreVibToggle { "Targeting Ignores Vibrato", colours::magenta };
     NeonToggle classicToggle   { "Classic Mode", colours::magenta };
     NeonToggle formantToggle   { "Formant Correction", colours::lime };
+    NeonToggle midiOutToggle   { "MIDI Out", colours::violet };
 
     std::vector<Section> sections;
 

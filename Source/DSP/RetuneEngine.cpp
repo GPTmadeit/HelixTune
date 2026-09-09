@@ -158,8 +158,10 @@ RetuneEngine::Output RetuneEngine::run (float detectedMidi, bool voiced, float t
     if (std::abs (p.naturalVibrato) > 1.0e-4f)
         result += lastVibrato * p.naturalVibrato;
 
-    result += p.transposeSemis + p.detuneCents * 0.01f;
+    const float offset = p.transposeSemis + p.detuneCents * 0.01f;
+    result += offset;
 
+    out.offsetSemis     = offset;
     out.targetMidi      = targetMidi;
     out.correctionSemis = result - detectedMidi;
     out.outputMidi      = result;

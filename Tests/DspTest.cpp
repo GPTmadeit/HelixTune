@@ -9,6 +9,11 @@
 #include "DSP/CorrectionEngine.h"
 #include "DSP/PitchDetector.h"
 #include "DSP/ScaleQuantizer.h"
+#include "DSP/PitchStabilizer.h"
+#include "DSP/KeyDetector.h"
+#include "DSP/TransientGuard.h"
+#include "DSP/FormantProcessor.h"
+#include "DSP/HarmonyEngine.h"
 
 #include <cmath>
 #include <cstdio>
@@ -153,6 +158,342 @@ static void testScaleQuantizer()
            juce::String (dev, 2) + " cents");
 }
 
+
+
+static void testPitchLattice()
+{
+    std::printf ("\nPitch candidate lattice\n");
+
+    const double sr = 44100.0;
+    const double f = 429.95;
+    juce::AudioBuffer<float> buf (1, 32768);
+    fillTone (buf, sr, f);
+
+    PitchDetector det;
+    det.prepare (sr);
+    det.setInputType (InputType::instrument);
+    det.setTracking (0.5f);
+
+    const auto r = det.process (buf.getReadPointer (0) + 8192);
+
+    check (r.numCandidates > 0, "lattice is populated",
+           juce::String (r.numCandidates) + " candidates");
+
+    // The true period must be present and must be the cheapest. YIN's
+    // cumulative mean scores 2T *better* than T on a periodic signal, so
+    // ranking candidates by raw cost silently discards the right answer.
+    bool foundTrue = false;
+    float trueCost = 1.0f, subCost = 0.0f;
+
+    for (int i = 0; i < r.numCandidates; ++i)
+    {
+        const float cents = std::abs (centsBetween (r.candidates[i].frequencyHz, (float) f));
+        if (cents < 10.0f) { foundTrue = true; trueCost = r.candidates[i].cost; }
+
+        const float octaveDown = std::abs (centsBetween (r.candidates[i].frequencyHz, (float) f * 0.5f));
+        if (octaveDown < 10.0f) subCost = r.candidates[i].cost;
+    }
+
+    check (foundTrue, "true period is in the lattice");
+    check (subCost > trueCost, "the octave-down subharmonic costs more than the true period",
+           "T=" + juce::String (trueCost, 4) + " vs 2T=" + juce::String (subCost, 4));
+}
+
+static void testStabilizerHoldsOctave()
+{
+    std::printf ("\nOctave stability over a full take\n");
+
+    const double sr = 44100.0;
+    const int hop = 256;
+    const int total = 32768 * 6;
+
+    // Vibrato makes this a realistic tracking problem rather than a static tone.
+    juce::AudioBuffer<float> buf (1, total);
+    {
+        auto* d = buf.getWritePointer (0);
+        double phase = 0.0;
+        for (int i = 0; i < total; ++i)
+        {
+            const double t = (double) i / sr;
+            const double f0 = 220.0 * std::pow (2.0, 0.3 * std::sin (2.0 * juce::MathConstants<double>::pi * 5.0 * t) / 12.0);
+            phase += 2.0 * juce::MathConstants<double>::pi * f0 / sr;
+            double v = 0.0;
+            for (int h = 1; h <= 6; ++h)
+                v += std::sin (phase * h) / (double) h;
+            d[i] = (float) (v * 0.18);
+        }
+    }
+
+    PitchDetector det;
+    PitchStabilizer stab;
+    det.prepare (sr);
+    det.setInputType (InputType::altoTenor);
+    det.setTracking (0.5f);
+    stab.prepare (sr, hop);
+    stab.setSmoothing (0.55f);
+
+    const int frame = det.getFrameSize();
+    int frames = 0, octaveErrors = 0;
+
+    for (int pos = 0; pos + frame <= total; pos += hop)
+    {
+        const auto raw = det.process (buf.getReadPointer (0) + pos);
+        const auto st = stab.process (raw, rangeForInputType (InputType::altoTenor));
+
+        if (! st.voiced)
+            continue;
+
+        ++frames;
+        if (std::abs (centsBetween (st.frequencyHz, 220.0f)) > 400.0f)
+            ++octaveErrors;
+    }
+
+    check (frames > 100, "tracked the take", juce::String (frames) + " voiced frames");
+    check (octaveErrors == 0, "no octave errors across the take",
+           juce::String (octaveErrors) + " of " + juce::String (frames));
+}
+
+static void testDiatonicHarmony()
+{
+    std::printf ("\nDiatonic harmony intervals\n");
+
+    ScaleQuantizer q;
+    q.setKey (0);     // C
+    q.setScale (1);   // Major
+
+    // A third above the tonic is four semitones; a third above the second
+    // degree is three. Fixed-interval harmony gets one of these wrong.
+    check (std::abs (q.transposeByScaleDegrees (60.0f, 2) - 64.0f) < 0.001f,
+           "C4 + 2 degrees is E4 (4 semitones)",
+           juce::String (q.transposeByScaleDegrees (60.0f, 2), 2));
+
+    check (std::abs (q.transposeByScaleDegrees (62.0f, 2) - 65.0f) < 0.001f,
+           "D4 + 2 degrees is F4 (3 semitones)",
+           juce::String (q.transposeByScaleDegrees (62.0f, 2), 2));
+
+    check (std::abs (q.transposeByScaleDegrees (60.0f, 7) - 72.0f) < 0.001f,
+           "seven degrees is exactly an octave",
+           juce::String (q.transposeByScaleDegrees (60.0f, 7), 2));
+
+    check (std::abs (q.transposeByScaleDegrees (60.0f, -7) - 48.0f) < 0.001f,
+           "minus seven degrees is an octave down",
+           juce::String (q.transposeByScaleDegrees (60.0f, -7), 2));
+}
+
+static void testHarmonyRendering()
+{
+    std::printf ("\nHarmony voice rendering\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+    const double inHz = 220.0;      // A3
+
+    HarmonyEngine harm;
+    harm.prepare (sr, blockSize, 55.0f);
+    harm.setRange (90.0f);
+
+    ScaleQuantizer q;
+    q.setKey (0);
+    q.setScale (1);
+
+    HarmonyEngine::Params p;
+    p.level = 1.0f;
+    p.anyEnabled = true;
+    p.voices[0].enabled = true;
+    p.voices[0].degrees = 2;        // A3 -> C4 in C major
+    p.voices[0].level = 1.0f;
+    p.voices[0].pan = -1.0f;        // hard left, so the pan law is testable
+    p.voices[0].formant = 1.0f;
+    p.voices[0].detuneCents = 0.0f;
+    p.voices[0].delayMs = 0.0f;
+
+    juce::AudioBuffer<float> source (1, total);
+    fillTone (source, sr, inHz);
+
+    std::vector<float> left ((size_t) total, 0.0f), right ((size_t) total, 0.0f);
+
+    const float leadMidi = 57.0f;   // A3
+    for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+    {
+        harm.updateTargets (leadMidi, leadMidi, true, q, p);
+        harm.process (source.getReadPointer (0) + pos, left.data() + pos, right.data() + pos,
+                      blockSize, p);
+    }
+
+    const int skip = harm.getShifterLatency() + 8192;
+    const float measured = measurePitch (left.data(), total, sr, skip);
+    const float expected = 261.626f;   // C4
+
+    const float err = std::abs (centsBetween (measured, expected));
+    check (err < 20.0f, "a third above A3 in C major renders as C4",
+           juce::String (measured, 2) + " Hz, " + juce::String (err, 1) + " cents");
+
+    float lPeak = 0.0f, rPeak = 0.0f;
+    for (int i = skip; i < total; ++i)
+    {
+        lPeak = juce::jmax (lPeak, std::abs (left[(size_t) i]));
+        rPeak = juce::jmax (rPeak, std::abs (right[(size_t) i]));
+    }
+
+    check (lPeak > 0.02f && rPeak < lPeak * 0.1f, "hard-left pan keeps the voice out of the right",
+           "L=" + juce::String (lPeak, 3) + " R=" + juce::String (rPeak, 3));
+}
+
+static void testKeyDetection()
+{
+    std::printf ("\nAuto-Key detection\n");
+
+    const double sr = 44100.0;
+    const int hop = 256;
+
+    KeyDetector kd;
+    kd.prepare (sr, hop);
+
+    // A melody that sits clearly in C major: tonic and dominant heavy.
+    const int melody[] = { 60, 64, 67, 64, 60, 62, 64, 65, 67, 65, 64, 62, 60, 67, 72, 67 };
+    const int n = (int) (sizeof (melody) / sizeof (melody[0]));
+
+    for (int rep = 0; rep < 40; ++rep)
+        for (int i = 0; i < n; ++i)
+            for (int frame = 0; frame < 40; ++frame)     // ~200 ms per note
+                kd.push ((float) melody[i], true, 1.0f);
+
+    const auto r = kd.getEstimate();
+    check (r.valid, "produced an estimate");
+    check (r.valid && r.rootPitchClass == 0 && ! r.minor, "identified C major",
+           juce::String (r.rootPitchClass) + (r.minor ? " minor" : " major")
+               + ", confidence " + juce::String (r.confidence, 2));
+
+    // The relative minor uses the same notes; only the weighting differs.
+    KeyDetector kd2;
+    kd2.prepare (sr, hop);
+    const int aMinor[] = { 57, 60, 64, 57, 59, 60, 62, 57, 55, 57, 64, 57 };
+    const int n2 = (int) (sizeof (aMinor) / sizeof (aMinor[0]));
+
+    for (int rep = 0; rep < 40; ++rep)
+        for (int i = 0; i < n2; ++i)
+            for (int frame = 0; frame < 40; ++frame)
+                kd2.push ((float) aMinor[i], true, 1.0f);
+
+    const auto r2 = kd2.getEstimate();
+    check (r2.valid && r2.rootPitchClass == 9 && r2.minor, "identified A minor",
+           juce::String (r2.rootPitchClass) + (r2.minor ? " minor" : " major"));
+}
+
+static void testTransientGuard()
+{
+    std::printf ("\nConsonant detection\n");
+
+    const double sr = 44100.0;
+    const int hop = 256;
+
+    TransientGuard g;
+    g.prepare (sr, hop);
+    g.setSensitivity (1.0f);
+
+    // Sustained vowel: periodic, low frequency content -> must not trigger.
+    juce::AudioBuffer<float> tone (1, hop * 40);
+    fillTone (tone, sr, 220.0);
+
+    float toneAmount = 0.0f;
+    for (int i = 0; i < 40; ++i)
+        toneAmount = g.process (tone.getReadPointer (0) + i * hop, hop, 0.98f);
+
+    check (toneAmount < 0.1f, "a sustained vowel is not flagged",
+           juce::String (toneAmount, 3));
+
+    // Fricative: broadband, aperiodic -> must trigger.
+    g.reset();
+    juce::Random rng (99);
+    std::vector<float> noise ((size_t) (hop * 40));
+    for (auto& v : noise)
+        v = rng.nextFloat() * 2.0f - 1.0f;
+
+    float noiseAmount = 0.0f;
+    for (int i = 0; i < 40; ++i)
+        noiseAmount = g.process (noise.data() + i * hop, hop, 0.05f);
+
+    check (noiseAmount > 0.5f, "a fricative is flagged", juce::String (noiseAmount, 3));
+}
+
+static float spectralCentroid (const float* data, int numSamples, double sr)
+{
+    juce::dsp::FFT fft (11);
+    const int size = 2048;
+    std::vector<juce::dsp::Complex<float>> in ((size_t) size), out ((size_t) size);
+
+    for (int i = 0; i < size; ++i)
+    {
+        const float w = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * i / (size - 1));
+        in[(size_t) i] = { (i < numSamples ? data[i] : 0.0f) * w, 0.0f };
+    }
+
+    fft.perform (in.data(), out.data(), false);
+
+    double num = 0.0, den = 0.0;
+    for (int k = 1; k < size / 2; ++k)
+    {
+        const double mag = std::abs (out[(size_t) k]);
+        const double f = (double) k * sr / size;
+        num += f * mag;
+        den += mag;
+    }
+
+    return den > 0.0 ? (float) (num / den) : 0.0f;
+}
+
+static void testFormantProcessor()
+{
+    std::printf ("\nLPC formant control\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 1.5);
+
+    auto run = [&] (float ratio, std::vector<float>& out)
+    {
+        FormantProcessor fp;
+        fp.prepare (sr, blockSize, 1);
+
+        juce::AudioBuffer<float> src (1, total);
+        fillTone (src, sr, 150.0);      // low f0, so formant motion is visible
+
+        out.assign ((size_t) total, 0.0f);
+        std::copy (src.getReadPointer (0), src.getReadPointer (0) + total, out.begin());
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            fp.setRatio (ratio);
+            fp.analyse (src.getReadPointer (0) + juce::jmax (0, pos - 1024),
+                        juce::jmin (1024, pos + blockSize));
+            fp.process (out.data() + pos, blockSize, 0);
+        }
+    };
+
+    std::vector<float> flat, shiftedUp, shiftedDown;
+    run (1.0f, flat);
+    run (1.5f, shiftedUp);
+    run (0.7f, shiftedDown);
+
+    const int at = total / 2;
+    const float cFlat = spectralCentroid (flat.data() + at, 2048, sr);
+    const float cUp   = spectralCentroid (shiftedUp.data() + at, 2048, sr);
+    const float cDown = spectralCentroid (shiftedDown.data() + at, 2048, sr);
+
+    check (cUp > cFlat * 1.05f, "raising the formant ratio raises the spectral centroid",
+           juce::String (cFlat, 0) + " -> " + juce::String (cUp, 0) + " Hz");
+    check (cDown < cFlat * 0.95f, "lowering it lowers the centroid",
+           juce::String (cFlat, 0) + " -> " + juce::String (cDown, 0) + " Hz");
+
+    bool clean = true;
+    for (float v : shiftedUp)
+        if (! std::isfinite (v) || std::abs (v) > 8.0f)
+            clean = false;
+
+    check (clean, "formant filter stays bounded and finite");
+}
+
 static void runChain (double sr, double inputHz, CorrectionEngine::Settings s,
                       float& outHz, float& peak)
 {
@@ -177,6 +518,27 @@ static void runChain (double sr, double inputHz, CorrectionEngine::Settings s,
         engine.process (block, s, (double) pos / sr, -1.0, nullptr, 0.0f, false, fifo);
         out.copyFrom (0, pos, block, 0, 0, blockSize);
     }
+
+    // Report what the engine actually decided, so a failure says why.
+    std::vector<PitchFrame> frames;
+    fifo.drain (frames);
+
+    int voiced = 0;
+    double consonant = 0.0, shift = 0.0, conf = 0.0, detMidi = 0.0;
+    for (const auto& f : frames)
+    {
+        consonant += f.consonant;
+        conf += f.confidence;
+        if (f.voiced) { ++voiced; shift += (f.outputMidi - f.detectedMidi); detMidi += f.detectedMidi; }
+    }
+
+    const size_t nf = juce::jmax ((size_t) 1, frames.size());
+    std::printf ("         [frames=%d voiced=%.0f%% conf=%.2f consonant=%.2f meanShift=%.3f st detMidi=%.2f ratio=%.3f period=%.1f]\n",
+                 (int) frames.size(), 100.0 * voiced / (double) nf,
+                 conf / (double) nf, consonant / (double) nf,
+                 voiced ? shift / voiced : 0.0,
+                 voiced ? detMidi / voiced : 0.0,
+                 engine.getLastPitchRatio(), engine.getLastPeriod());
 
     // Skip the algorithmic latency plus time for the retune ramp to settle.
     const int skip = engine.getLatencySamples() + (int) (sr * 0.5);
@@ -425,18 +787,89 @@ static void testSilence()
     check (maxAbs < 1.0e-6f, "silence in, silence out", "peak " + juce::String (maxAbs, 9));
 }
 
+
+/** Not a pass/fail check - a number the user needs in order to decide whether
+    this fits on a track. Reported as a real-time factor: 100x means one second
+    of audio costs 10 ms of CPU. */
+static void reportPerformance()
+{
+    std::printf ("\nThroughput (stereo, 44.1 kHz, 512-sample blocks)\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 10.0);
+
+    auto measure = [&] (const char* label, bool harmonyOn)
+    {
+        CorrectionEngine engine;
+        engine.prepare (sr, blockSize, 2);
+
+        PitchFifo fifo;
+        CorrectionEngine::Settings s;
+        s.inputType = InputType::altoTenor;
+        s.retune.retuneMs = 20.0f;
+        s.mix = 1.0f;
+        s.outputGain = 1.0f;
+        s.throatLength = harmonyOn ? 1.2f : 1.0f;   // exercise the LPC filter too
+
+        if (harmonyOn)
+        {
+            s.harmony.anyEnabled = true;
+            s.harmony.level = 0.7f;
+            for (int v = 0; v < HarmonyEngine::maxVoices; ++v)
+            {
+                s.harmony.voices[(size_t) v].enabled = true;
+                s.harmony.voices[(size_t) v].degrees = 2 + v;
+                s.harmony.voices[(size_t) v].level = 0.7f;
+            }
+        }
+
+        juce::AudioBuffer<float> source (2, total);
+        fillTone (source, sr, 220.0);
+
+        juce::AudioBuffer<float> block (2, blockSize);
+        const auto start = juce::Time::getHighResolutionTicks();
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+                block.copyFrom (ch, 0, source, ch, pos, blockSize);
+
+            engine.process (block, s, (double) pos / sr, -1.0, nullptr, 0.0f, false, fifo);
+        }
+
+        const double seconds = juce::Time::highResolutionTicksToSeconds (
+                                   juce::Time::getHighResolutionTicks() - start);
+        const double audioSeconds = (double) total / sr;
+
+        std::printf ("         %-28s %6.1fx real time  (%.1f%% of one core)\n",
+                     label, audioSeconds / seconds, 100.0 * seconds / audioSeconds);
+    };
+
+    measure ("correction only", false);
+    measure ("correction + 4 harmony", true);
+}
+
 int main()
 {
     std::printf ("HELIX Tune - DSP verification\n");
     std::printf ("=============================\n");
 
     testDetectorAccuracy();
+    testPitchLattice();
+    testStabilizerHoldsOctave();
     testScaleQuantizer();
     testShifterDelayDrift();
     testShifterRatioAccuracy();
     testEndToEndCorrection();
+    testDiatonicHarmony();
+    testHarmonyRendering();
+    testKeyDetection();
+    testTransientGuard();
+    testFormantProcessor();
     testStability();
     testSilence();
+    reportPerformance();
 
     std::printf ("\n=============================\n");
     std::printf ("%d checks, %d failed\n", checks, failures);

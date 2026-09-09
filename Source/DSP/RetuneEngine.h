@@ -33,6 +33,12 @@ public:
         float targetMidi      = 0.0f;
         float outputMidi      = 0.0f;
         float correctionSemis = 0.0f;
+
+        /** The part of correctionSemis that is transpose and detune rather than
+            pitch correction. Consonant protection must not cancel it: leaving a
+            sibilant uncorrected is right, dropping it out of the transposed key
+            is not. */
+        float offsetSemis     = 0.0f;
         float pitchRatio      = 1.0f;
         bool  corrected       = false;
     };

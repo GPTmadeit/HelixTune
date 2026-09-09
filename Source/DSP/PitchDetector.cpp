@@ -199,6 +199,101 @@ float PitchDetector::parabolicRefine (const Config& c, int tau) const noexcept
     return (float) tau + juce::jlimit (-1.0f, 1.0f, 0.5f * (a - d) / denom);
 }
 
+void PitchDetector::collectCandidates (const Config& c, float threshold, int tauYin,
+                                       Result& out) const noexcept
+{
+    // Every local minimum of the normalised difference is a period the frame is
+    // consistent with, and handing several upward lets a temporal model choose.
+    //
+    // But the lattice cannot simply be "the lowest-cost minima". The cumulative
+    // mean in YIN's step 3 divides by a running average that grows with tau, so
+    // a subharmonic routinely scores *better* than the true period - for a
+    // 430 Hz tone, cmnd is 0.0014 at T and 0.0002 at 2T. Ranking by cost alone
+    // therefore evicts the correct answer and keeps six wrong octaves.
+    //
+    // So the lattice is anchored on YIN's own threshold-crossing estimate,
+    // which is right by construction, and the alternatives are hung around it.
+    out.numCandidates = 0;
+
+    const int anchorTau = juce::jlimit (c.tauMin, c.tauMax, std::abs (tauYin));
+    const float anchor = parabolicRefine (c, anchorTau);
+
+    if (anchor > 0.0f)
+    {
+        auto& cand = out.candidates[(size_t) out.numCandidates++];
+        cand.periodSamples = anchor;
+        cand.frequencyHz   = (float) (fs / (double) anchor);
+        cand.cost          = juce::jlimit (0.0f, 1.0f, cmnd[(size_t) anchorTau]);
+    }
+
+    struct Local { int tau; float cost; };
+    Local best[maxCandidates];
+    int found = 0;
+
+    for (int tau = c.tauMin + 1; tau < c.tauMax; ++tau)
+    {
+        const float v = cmnd[(size_t) tau];
+
+        if (v >= cmnd[(size_t) (tau - 1)] || v > cmnd[(size_t) (tau + 1)])
+            continue;
+
+        if (v > 0.75f)          // far too aperiodic to be worth carrying
+            continue;
+
+        if (std::abs (tau - anchorTau) <= 2)   // already present as the anchor
+            continue;
+
+        if (found < maxCandidates - 1)
+        {
+            best[found++] = { tau, v };
+        }
+        else
+        {
+            // Replace the worst entry if this one beats it.
+            int worst = 0;
+            for (int i = 1; i < found; ++i)
+                if (best[i].cost > best[worst].cost)
+                    worst = i;
+
+            if (found > 0 && v < best[worst].cost)
+                best[worst] = { tau, v };
+        }
+    }
+
+    for (int i = 0; i < found && out.numCandidates < maxCandidates; ++i)
+    {
+        const float tau = parabolicRefine (c, best[i].tau);
+        if (tau <= 0.0f)
+            continue;
+
+        auto& cand = out.candidates[(size_t) out.numCandidates++];
+        cand.periodSamples = tau;
+        cand.frequencyHz   = (float) (fs / (double) tau);
+        cand.cost          = juce::jlimit (0.0f, 1.0f, best[i].cost);
+    }
+
+    if (out.numCandidates == 0 || anchor <= 0.0f)
+        return;
+
+    // Octave alternatives stay in the lattice, but start at a disadvantage, so
+    // the temporal model only leaves the anchor when history really insists.
+    for (int i = 0; i < out.numCandidates; ++i)
+    {
+        auto& cand = out.candidates[(size_t) i];
+        const float ratio = cand.periodSamples / anchor;
+
+        if (ratio > 1.4f)
+            cand.cost = juce::jlimit (0.0f, 2.0f, cand.cost + 0.35f * std::log2 (ratio));
+        else if (ratio < 1.0f / 1.4f)
+            cand.cost = juce::jlimit (0.0f, 2.0f, cand.cost + 0.35f * std::log2 (1.0f / ratio));
+    }
+
+    std::sort (out.candidates, out.candidates + out.numCandidates,
+               [] (const Candidate& a, const Candidate& b) { return a.periodSamples < b.periodSamples; });
+
+    juce::ignoreUnused (threshold);
+}
+
 PitchDetector::Result PitchDetector::process (const float* frame) noexcept
 {
     Result out;
@@ -212,7 +307,9 @@ PitchDetector::Result PitchDetector::process (const float* frame) noexcept
     for (int i = 0; i < c.frameSize; ++i)
         energy += (double) frame[i] * frame[i];
 
-    if (std::sqrt (energy / (double) c.frameSize) < 1.0e-5)
+    out.rms = (float) std::sqrt (energy / (double) c.frameSize);
+
+    if (out.rms < 1.0e-5f)
     {
         reset();
         return out;
@@ -225,6 +322,8 @@ PitchDetector::Result PitchDetector::process (const float* frame) noexcept
     const float threshold = juce::jmap (tracking, 0.0f, 1.0f, 0.05f, 0.30f);
 
     const int raw = absoluteThreshold (c, threshold);
+
+    collectCandidates (c, threshold, std::abs (raw), out);
     const bool crossed = raw > 0;
     const int tauInt = std::abs (raw);
 

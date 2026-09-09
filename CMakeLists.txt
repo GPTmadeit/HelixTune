@@ -40,7 +40,7 @@ juce_add_plugin(HelixTune
 
     IS_SYNTH                    FALSE
     NEEDS_MIDI_INPUT            TRUE      # MIDI target-note mode
-    NEEDS_MIDI_OUTPUT           FALSE
+    NEEDS_MIDI_OUTPUT           TRUE      # emits the detected pitch as MIDI
     IS_MIDI_EFFECT              FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS TRUE      # graph editor uses key commands
 
@@ -59,7 +59,12 @@ target_sources(HelixTune PRIVATE
     Source/PluginEditor.cpp
 
     Source/DSP/PitchDetector.cpp
+    Source/DSP/PitchStabilizer.cpp
     Source/DSP/PsolaShifter.cpp
+    Source/DSP/FormantProcessor.cpp
+    Source/DSP/KeyDetector.cpp
+    Source/DSP/TransientGuard.cpp
+    Source/DSP/HarmonyEngine.cpp
     Source/DSP/ScaleQuantizer.cpp
     Source/DSP/RetuneEngine.cpp
     Source/DSP/VibratoGenerator.cpp
@@ -68,12 +73,15 @@ target_sources(HelixTune PRIVATE
     Source/Model/Parameters.cpp
     Source/Model/PitchTrack.cpp
     Source/Model/GraphModel.cpp
+    Source/Model/PresetManager.cpp
 
     Source/UI/FuturisticLookAndFeel.cpp
     Source/UI/Widgets/NeonKnob.cpp
     Source/UI/Widgets/ScaleKeyboard.cpp
     Source/UI/Widgets/PitchScope.cpp
+    Source/UI/Widgets/AutoKeyDisplay.cpp
     Source/UI/AutoModePanel.cpp
+    Source/UI/HarmonyPanel.cpp
     Source/UI/Graph/GraphEditorPanel.cpp
     Source/UI/Graph/PianoRollView.cpp
 )
@@ -121,7 +129,12 @@ juce_add_console_app(HelixTuneDspTest PRODUCT_NAME "HelixTuneDspTest")
 target_sources(HelixTuneDspTest PRIVATE
     Tests/DspTest.cpp
     Source/DSP/PitchDetector.cpp
+    Source/DSP/PitchStabilizer.cpp
     Source/DSP/PsolaShifter.cpp
+    Source/DSP/FormantProcessor.cpp
+    Source/DSP/KeyDetector.cpp
+    Source/DSP/TransientGuard.cpp
+    Source/DSP/HarmonyEngine.cpp
     Source/DSP/ScaleQuantizer.cpp
     Source/DSP/RetuneEngine.cpp
     Source/DSP/VibratoGenerator.cpp

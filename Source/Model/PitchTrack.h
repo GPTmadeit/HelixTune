@@ -18,6 +18,7 @@ struct PitchFrame
     float  outputMidi   = 0.0f;
     float  confidence   = 0.0f;
     float  rms          = 0.0f;
+    float  consonant    = 0.0f;  // 1 = unpitched consonant, correction held off
     bool   voiced       = false;
 };
 

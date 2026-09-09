@@ -1,10 +1,15 @@
 #pragma once
 
 #include "PitchDetector.h"
+#include "PitchStabilizer.h"
 #include "PsolaShifter.h"
 #include "ScaleQuantizer.h"
 #include "RetuneEngine.h"
 #include "VibratoGenerator.h"
+#include "KeyDetector.h"
+#include "TransientGuard.h"
+#include "FormantProcessor.h"
+#include "HarmonyEngine.h"
 #include "../Model/PitchTrack.h"
 #include "../Model/GraphModel.h"
 
@@ -17,6 +22,11 @@ namespace helix
     Detection runs once on the channel sum; the resulting pitch ratio is then
     applied to every channel by its own shifter. Detecting per channel would
     let a stereo pair drift apart and smear the image.
+
+    Signal order for the lead voice is pitch first, then formants: PSOLA moves
+    the pulse rate while preserving the spectral envelope, and the LPC filter
+    then moves the envelope by exactly as much as the user asked for. Doing it
+    in this order means the two controls do not interact.
 */
 class CorrectionEngine
 {
@@ -25,6 +35,8 @@ public:
     {
         InputType inputType = InputType::altoTenor;
         float     tracking  = 0.5f;
+        float     pitchSmoothing = 0.55f;
+        float     sibilanceGuard = 0.6f;
 
         int      key = 0;
         int      scaleIndex = 0;
@@ -32,6 +44,7 @@ public:
 
         RetuneEngine::Params     retune;
         VibratoGenerator::Params vibrato;
+        HarmonyEngine::Params    harmony;
 
         bool  formantCorrection = true;
         float throatLength = 1.0f;       // 0.5 (short) .. 2.0 (long)
@@ -62,6 +75,16 @@ public:
                   bool haveMidiTarget,
                   PitchFifo& fifo) noexcept;
 
+    /** Auto-Key result, safe to read from the editor. */
+    KeyDetector::Result getKeyEstimate() const noexcept { return keyDetector.getEstimate(); }
+    float getChroma (int pitchClass) const noexcept { return keyDetector.getChroma (pitchClass); }
+
+    /** Latest stabilised note, for MIDI output. */
+    float getLastPitchRatio() const noexcept { return curPitchRatio; }
+    float getLastPeriod() const noexcept { return curPeriod; }
+    float getLiveMidiNote() const noexcept { return liveMidi; }
+    bool  isLiveVoiced() const noexcept { return liveVoiced; }
+
 private:
     void applySettings (const Settings& s) noexcept;
     void runAnalysisHop (const Settings& s, double hopTime, double hopPpq,
@@ -76,9 +99,14 @@ private:
     bool   latencyDirty = false;
 
     PitchDetector    detector;
+    PitchStabilizer  stabilizer;
     ScaleQuantizer   quantizer;
     RetuneEngine     retune;
     VibratoGenerator vibrato;
+    KeyDetector      keyDetector;
+    TransientGuard   transientGuard;
+    FormantProcessor formantProc;
+    HarmonyEngine    harmony;
     std::vector<PsolaShifter> shifters;
 
     // Control values held constant across each analysis hop.
@@ -87,6 +115,8 @@ private:
     float curPeriod       = 200.0f;
     float curGain         = 1.0f;
     bool  curVoiced       = false;
+    float liveMidi        = 0.0f;
+    bool  liveVoiced      = false;
 
     int      lastInputType   = -1;
     uint32_t lastNoteStates  = 0xFFFFFFFF;
@@ -95,6 +125,7 @@ private:
 
     std::vector<float> mono;        // channel sum for analysis
     std::vector<float> history;     // newest getMaxFrameSize() samples
+    std::vector<float> harmonyL, harmonyR;
     float lastRms = 0.0f;
 
     // Delayed dry, for the Mix control and for hard bypass, so switching

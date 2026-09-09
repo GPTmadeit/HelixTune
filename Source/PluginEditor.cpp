@@ -8,31 +8,25 @@ using namespace ui;
 static constexpr int headerHeight = 52;
 
 HelixTuneEditor::HelixTuneEditor (HelixTuneProcessor& p)
-    : AudioProcessorEditor (&p), processor (p), autoPanel (p), graphPanel (p)
+    : AudioProcessorEditor (&p), processor (p), autoPanel (p), harmonyPanel (p), graphPanel (p),
+      presets (p.apvts)
 {
     setLookAndFeel (&lookAndFeel);
 
     addAndMakeVisible (autoPanel);
+    addAndMakeVisible (harmonyPanel);
     addAndMakeVisible (graphPanel);
 
-    for (auto* b : { &autoModeButton, &graphModeButton })
+    for (auto* b : { &autoModeButton, &harmonyModeButton, &graphModeButton })
     {
         b->setColour (juce::TextButton::buttonOnColourId, colours::cyan);
         b->setClickingTogglesState (false);
         addAndMakeVisible (b);
     }
 
-    autoModeButton.onClick = [this]
-    {
-        processor.apvts.getParameter (params::graphMode)->setValueNotifyingHost (0.0f);
-        updateMode();
-    };
-
-    graphModeButton.onClick = [this]
-    {
-        processor.apvts.getParameter (params::graphMode)->setValueNotifyingHost (1.0f);
-        updateMode();
-    };
+    autoModeButton.onClick    = [this] { setView (0); };
+    harmonyModeButton.onClick = [this] { setView (1); };
+    graphModeButton.onClick   = [this] { setView (2); };
 
     bypassButton.setColour (juce::TextButton::buttonOnColourId, colours::danger);
     addAndMakeVisible (bypassButton);
@@ -49,6 +43,21 @@ HelixTuneEditor::HelixTuneEditor (HelixTuneProcessor& p)
     outputAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processor.apvts, params::outputGain, outputSlider);
 
+    presetBox.setTextWhenNothingSelected ("PRESET");
+    presetBox.onChange = [this]
+    {
+        const int index = presetBox.getSelectedItemIndex();
+        if (index >= 0)
+            presets.load (index);
+    };
+    addAndMakeVisible (presetBox);
+
+    savePresetButton.setColour (juce::TextButton::buttonOnColourId, colours::lime);
+    savePresetButton.onClick = [this] { promptSavePreset(); };
+    addAndMakeVisible (savePresetButton);
+
+    refreshPresetList();
+
     setResizable (true, true);
     setResizeLimits (1000, 620, 2400, 1500);
     setSize (1140, 680);
@@ -63,15 +72,80 @@ HelixTuneEditor::~HelixTuneEditor()
     setLookAndFeel (nullptr);
 }
 
+void HelixTuneEditor::refreshPresetList (const juce::String& select)
+{
+    presetBox.clear (juce::dontSendNotification);
+
+    const auto names = presets.getAllNames();
+    const int numFactory = presets.getNumFactory();
+
+    for (int i = 0; i < names.size(); ++i)
+    {
+        if (i == numFactory)
+            presetBox.addSeparator();
+
+        presetBox.addItem (names[i], i + 1);
+    }
+
+    if (select.isNotEmpty())
+    {
+        const int index = names.indexOf (select);
+        if (index >= 0)
+            presetBox.setSelectedItemIndex (index, juce::dontSendNotification);
+    }
+}
+
+void HelixTuneEditor::promptSavePreset()
+{
+    auto* window = new juce::AlertWindow ("Save Preset",
+                                          "Name this preset:",
+                                          juce::MessageBoxIconType::NoIcon);
+
+    window->addTextEditor ("name", "My Preset");
+    window->addButton ("Save", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<HelixTuneEditor> safeThis (this);
+
+    window->enterModalState (true, juce::ModalCallbackFunction::create (
+        [safeThis, window] (int result)
+        {
+            // Read the field before the window tears itself down.
+            const auto name = window->getTextEditorContents ("name");
+
+            if (result == 1 && safeThis != nullptr && name.trim().isNotEmpty())
+                if (safeThis->presets.saveUser (name))
+                    safeThis->refreshPresetList (juce::File::createLegalFileName (name.trim()));
+        }), true);
+}
+
+void HelixTuneEditor::setView (int view)
+{
+    currentView = juce::jlimit (0, 2, view);
+
+    if (auto* p = processor.apvts.getParameter (params::graphMode))
+        p->setValueNotifyingHost (currentView == 2 ? 1.0f : 0.0f);
+
+    updateMode();
+}
+
 void HelixTuneEditor::updateMode()
 {
     const bool graph = *processor.apvts.getRawParameterValue (params::graphMode) > 0.5f;
 
-    autoPanel.setVisible (! graph);
-    graphPanel.setVisible (graph);
+    // The host owns graph mode, so it wins if it was automated behind our back.
+    if (graph)
+        currentView = 2;
+    else if (currentView == 2)
+        currentView = 0;
 
-    autoModeButton.setToggleState (! graph, juce::dontSendNotification);
-    graphModeButton.setToggleState (graph, juce::dontSendNotification);
+    autoPanel.setVisible (currentView == 0);
+    harmonyPanel.setVisible (currentView == 1);
+    graphPanel.setVisible (currentView == 2);
+
+    autoModeButton.setToggleState (currentView == 0, juce::dontSendNotification);
+    harmonyModeButton.setToggleState (currentView == 1, juce::dontSendNotification);
+    graphModeButton.setToggleState (currentView == 2, juce::dontSendNotification);
 
     repaint();
 }
@@ -87,6 +161,7 @@ void HelixTuneEditor::timerCallback()
         // capturing the contour while auto mode is on screen, otherwise
         // switching to graph mode would show an empty timeline.
         autoPanel.pushFrames (scratch);
+        harmonyPanel.pushFrames (scratch);
         graphPanel.pushFrames (scratch);
     }
 
@@ -108,14 +183,17 @@ void HelixTuneEditor::resized()
     headerBounds = area.removeFromTop (headerHeight);
 
     autoPanel.setBounds (area);
+    harmonyPanel.setBounds (area);
     graphPanel.setBounds (area);
 
     auto bar = headerBounds.reduced (14, 10);
     bar.removeFromLeft (168);   // wordmark
 
-    autoModeButton.setBounds (bar.removeFromLeft (74));
+    autoModeButton.setBounds (bar.removeFromLeft (68));
     bar.removeFromLeft (4);
-    graphModeButton.setBounds (bar.removeFromLeft (74));
+    harmonyModeButton.setBounds (bar.removeFromLeft (84));
+    bar.removeFromLeft (4);
+    graphModeButton.setBounds (bar.removeFromLeft (68));
 
     bypassButton.setBounds (bar.removeFromRight (86));
     bar.removeFromRight (14);
@@ -126,10 +204,15 @@ void HelixTuneEditor::resized()
     bar.removeFromRight (36);
     mixSlider.setBounds (bar.removeFromRight (110).withTrimmedTop (11));
 
-    // Whatever is left between the mode buttons and the mix slider. Drawing
-    // the latency readout right-aligned in the header instead put it straight
-    // on top of the output slider.
-    latencyBounds = bar.reduced (24, 0);
+    // Presets take the middle of the bar; the latency readout tucks under the
+    // wordmark, which is the only space left that nothing else wants.
+    bar.removeFromLeft (18);
+    presetBox.setBounds (bar.removeFromLeft (juce::jmin (196, juce::jmax (0, bar.getWidth() - 70))));
+    bar.removeFromLeft (6);
+    savePresetButton.setBounds (bar.removeFromLeft (54));
+
+    latencyBounds = headerBounds.reduced (14, 0).withWidth (168)
+                        .removeFromBottom (13).translated (0, -5);
 }
 
 void HelixTuneEditor::paint (juce::Graphics& g)
@@ -171,7 +254,7 @@ void HelixTuneEditor::paint (juce::Graphics& g)
     g.fillRect (sweepX + sweepW * 0.5f, header.getBottom() - 1.5f, sweepW * 0.5f, 1.5f);
 
     // wordmark
-    auto mark = headerBounds.reduced (14, 0).withWidth (168);
+    auto mark = headerBounds.reduced (14, 0).withWidth (168).translated (0, -6);
 
     g.setColour (colours::cyan);
     g.setFont (FuturisticLookAndFeel::uiFont (23.0f, true));

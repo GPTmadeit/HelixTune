@@ -51,6 +51,16 @@ public:
     /** Nearest legal target to a fractional MIDI note. */
     Target findTarget (float inputMidiNote) const noexcept;
 
+    /** Moves a note by @p degrees steps *along the scale*, not by a fixed
+        interval. A third above the tonic in a major scale is four semitones;
+        a third above the second degree is three. Harmony that ignores this
+        sounds wrong on every other note. */
+    float transposeByScaleDegrees (float midiNote, int degrees) const noexcept;
+
+    /** Ordered scale tones in one octave, as semitone offsets from the root.
+        Returns how many were written (removed notes are excluded). */
+    int getScaleTones (int* destination, int capacity) const noexcept;
+
     /** True if the scale currently admits at least one target. */
     bool hasAnyTarget() const noexcept;
 

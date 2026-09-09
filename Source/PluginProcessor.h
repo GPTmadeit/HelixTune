@@ -9,7 +9,8 @@
 namespace helix
 {
 
-class HelixTuneProcessor : public juce::AudioProcessor
+class HelixTuneProcessor : public juce::AudioProcessor,
+                           private juce::AsyncUpdater
 {
 public:
     HelixTuneProcessor();
@@ -25,7 +26,7 @@ public:
 
     const juce::String getName() const override { return "HELIX Tune"; }
     bool acceptsMidi() const override  { return true; }
-    bool producesMidi() const override { return false; }
+    bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -55,12 +56,18 @@ public:
     bool   isTransportPlaying() const noexcept { return transportPlaying.load (std::memory_order_relaxed); }
     double getCurrentSampleRate() const noexcept { return currentSampleRate; }
 
+    /** Auto-Key readouts for the editor. */
+    KeyDetector::Result getKeyEstimate() const noexcept { return engine.getKeyEstimate(); }
+    float getChroma (int pitchClass) const noexcept { return engine.getChroma (pitchClass); }
+
     /** Editor persists its own view state (zoom, tool, scroll) here. */
     juce::ValueTree editorState { "EDITOR" };
 
 private:
     CorrectionEngine::Settings buildSettings() const noexcept;
     void updateMidiTargets (const juce::MidiBuffer& midi) noexcept;
+    void emitPitchMidi (juce::MidiBuffer& midi, int numSamples) noexcept;
+    void handleAsyncUpdate() override;
 
     CorrectionEngine engine;
     PitchFifo fifo;
@@ -76,6 +83,14 @@ private:
     // Most recently pressed note still held, for MIDI target mode.
     std::array<bool, 128> heldNotes { };
     int lastHeldNote = -1;
+
+    // Auto-Key hands its suggestion to the message thread; changing a
+    // parameter from the audio thread is not safe.
+    std::atomic<int> pendingKeyRoot { -1 };
+    std::atomic<int> pendingKeyScale { -1 };
+    int appliedKeyRoot = -1, appliedKeyScale = -1;
+
+    int emittedMidiNote = -1;
 
     // Cached parameter pointers. Looking these up by string in processBlock
     // would be a hash lookup per parameter per block.
@@ -108,6 +123,24 @@ private:
         std::atomic<float>* vibFormantAmount = nullptr;
         std::atomic<float>* graphMode = nullptr;
         std::atomic<float>* midiTarget = nullptr;
+        std::atomic<float>* pitchSmooth = nullptr;
+        std::atomic<float>* sibilance = nullptr;
+        std::atomic<float>* autoKey = nullptr;
+        std::atomic<float>* midiOut = nullptr;
+        std::atomic<float>* harmLevel = nullptr;
+        std::atomic<float>* harmSpread = nullptr;
+
+        struct HarmonyVoice
+        {
+            std::atomic<float>* enable = nullptr;
+            std::atomic<float>* degrees = nullptr;
+            std::atomic<float>* level = nullptr;
+            std::atomic<float>* pan = nullptr;
+            std::atomic<float>* formant = nullptr;
+            std::atomic<float>* detune = nullptr;
+        };
+
+        std::array<HarmonyVoice, (size_t) params::numHarmonyVoices> harmony { };
     } cache;
 
     void buildCache();
