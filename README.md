@@ -335,6 +335,52 @@ Packaging the installer needs [Inno Setup 6](https://jrsoftware.org/isinfo.php):
 ISCC.exe /DArtefacts="<build>/HelixTune_artefacts/Release" /DAppVersion=1.0.0 packaging/HelixTune.iss
 ```
 
+### Code signing
+
+Released binaries are **not currently signed**, so Windows SmartScreen warns on
+first run. The pipeline is in place and tested — all that is missing is a
+certificate, which has to be bought and tied to a verified identity.
+
+`packaging/sign.ps1` signs the VST3, the standalone app **and** the installer,
+in that order. Signing only the installer would leave the files it writes to
+disk unsigned, and those are the ones a DAW actually loads. Everything is
+SHA-256 and RFC3161-timestamped, so signatures keep validating after the
+certificate expires.
+
+```powershell
+# Hardware token or any certificate already in the Windows store
+./packaging/sign.ps1 -Thumbprint <thumbprint> `
+                     -Artefacts "<build>/HelixTune_artefacts/Release" `
+                     -Installer dist/HELIX-Tune-1.0.0-Windows.exe
+```
+
+The script also accepts `-PfxPath` (internal/test certificates only) and
+`-AzureMetadata` for [Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/).
+Add `-WhatIfOnly` to print the commands without running them.
+
+To have Inno sign the installer and its uninstaller as part of the build:
+
+```bash
+ISCC.exe /DSignToolName=helixsign \
+         /Shelixsign="signtool.exe sign /sha1 <thumb> /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $f" \
+         /DArtefacts="..." packaging/HelixTune.iss
+```
+
+**On obtaining a certificate.** Since June 2023 the CA/Browser Forum requires
+private keys for publicly-trusted code-signing certificates to live on FIPS
+140-2 Level 2 hardware — a USB token or a cloud HSM. A `.pfx` file you can copy
+around is no longer issuable for public trust.
+
+| Option | Roughly | Notes |
+|---|---|---|
+| **Azure Trusted Signing** | ~$10/month | Cheapest. Key in Microsoft's HSM, no token to lose. Individual identity validation requires ~3 years of verifiable history. |
+| **OV certificate** (Sectigo, DigiCert, SSL.com) | ~$200–600/yr | Ships a USB token. SmartScreen reputation still has to be earned over time and downloads. |
+| **EV certificate** | ~$400–800/yr | Immediate SmartScreen reputation. Usually requires a registered business. |
+
+An OV certificate removes the "unknown publisher" wording but not necessarily
+the SmartScreen prompt straight away — reputation accrues per publisher. EV
+skips that wait.
+
 ---
 
 ## Layout

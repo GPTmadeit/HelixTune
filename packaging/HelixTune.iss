@@ -57,6 +57,21 @@ CloseApplications=yes
 CloseApplicationsFilter=*.exe
 RestartApplications=no
 
+; Authenticode signing, enabled by passing /DSignToolName=<name> along with the
+; matching /S<name>="..." definition:
+;
+;   ISCC /DSignToolName=helixsign ^
+;        /Shelixsign="signtool.exe sign /sha1 <thumb> /fd SHA256 /tr <url> /td SHA256 $f" ^
+;        HelixTune.iss
+;
+; SignedUninstaller matters: without it the uninstaller written to disk is
+; unsigned, and that is the one file a user runs months later when Windows has
+; forgotten the installer's reputation.
+#ifdef SignToolName
+SignTool={#SignToolName}
+SignedUninstaller=yes
+#endif
+
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
