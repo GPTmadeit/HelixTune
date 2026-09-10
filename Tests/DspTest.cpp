@@ -340,6 +340,500 @@ static void testHarmonyRendering()
            "L=" + juce::String (lPeak, 3) + " R=" + juce::String (rPeak, 3));
 }
 
+
+
+/** Fraction of spectral energy that does NOT sit on the harmonic series of
+    @p f0. A clean shifted voice is nearly all harmonic; grain artefacts,
+    aliasing and modulation sidebands all land between the harmonics. */
+static float inharmonicRatio (const float* data, int numSamples, double sr, double f0)
+{
+    const int size = 8192;
+    juce::dsp::FFT fft (13);
+    std::vector<juce::dsp::Complex<float>> in ((size_t) size), out ((size_t) size);
+
+    for (int i = 0; i < size; ++i)
+    {
+        const float w = 0.5f - 0.5f * std::cos (2.0f * juce::MathConstants<float>::pi * i / (size - 1));
+        in[(size_t) i] = { (i < numSamples ? data[i] : 0.0f) * w, 0.0f };
+    }
+
+    fft.perform (in.data(), out.data(), false);
+
+    const double binHz = sr / size;
+    double total = 0.0, harmonic = 0.0;
+
+    for (int k = 2; k < size / 2; ++k)
+    {
+        const double mag = std::abs (out[(size_t) k]);
+        const double power = mag * mag;
+        const double f = k * binHz;
+
+        if (f > 8000.0)
+            break;
+
+        total += power;
+
+        // Within a few bins of any harmonic counts as harmonic energy.
+        const double nearest = std::round (f / f0);
+        if (nearest >= 1.0 && std::abs (f - nearest * f0) < binHz * 2.5)
+            harmonic += power;
+    }
+
+    return total > 0.0 ? (float) (1.0 - harmonic / total) : 0.0f;
+}
+
+
+
+/** A voice-like source: vibrato, cycle-to-cycle jitter, amplitude shimmer, a
+    formant-shaped harmonic series and a breath-noise floor. A perfectly
+    periodic tone flatters any pitch-synchronous algorithm; this does not. */
+static void fillVoiceLike (juce::AudioBuffer<float>& buf, double sr, double f0, float noiseDb)
+{
+    const int n = buf.getNumSamples();
+    juce::Random rng (777);
+
+    double phase = 0.0;
+    double jitter = 0.0;
+    const float noiseGain = std::pow (10.0f, noiseDb / 20.0f);
+
+    for (int i = 0; i < n; ++i)
+    {
+        const double t = (double) i / sr;
+
+        // 5 Hz vibrato plus a slow random walk in the period (natural jitter).
+        jitter += (rng.nextDouble() * 2.0 - 1.0) * 0.0006;
+        jitter = juce::jlimit (-0.01, 0.01, jitter);
+
+        const double vib = 0.25 * std::sin (2.0 * juce::MathConstants<double>::pi * 5.0 * t) / 12.0;
+        const double f = f0 * std::pow (2.0, vib) * (1.0 + jitter);
+
+        phase += 2.0 * juce::MathConstants<double>::pi * f / sr;
+
+        // Harmonics under a two-formant envelope.
+        double v = 0.0;
+        for (int h = 1; h <= 24; ++h)
+        {
+            const double hf = f * h;
+            if (hf > sr * 0.45) break;
+
+            const double f1 = std::exp (-std::pow ((hf - 700.0) / 420.0, 2.0));
+            const double f2 = std::exp (-std::pow ((hf - 2300.0) / 700.0, 2.0)) * 0.55;
+            const double amp = (f1 + f2 + 0.05) / (double) h;
+
+            v += std::sin (phase * h) * amp;
+        }
+
+        const double shimmer = 1.0 + 0.06 * std::sin (2.0 * juce::MathConstants<double>::pi * 4.3 * t);
+        const float breath = (rng.nextFloat() * 2.0f - 1.0f) * noiseGain;
+
+        buf.getWritePointer (0)[i] = (float) (v * 0.22 * shimmer) + breath;
+    }
+}
+
+static void testShifterOnRealisticVoice()
+{
+    std::printf ("\nShifter artefacts on a voice-like source\n");
+
+    const double sr = 44100.0;
+    const double inHz = 220.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+
+    auto measure = [&] (float ratio, float noiseDb)
+    {
+        juce::AudioBuffer<float> source (1, total);
+        fillVoiceLike (source, sr, inHz, noiseDb);
+
+        // What the input itself scores, so the shifter's own contribution can
+        // be separated from the source's natural inharmonicity.
+        const float inputScore = inharmonicRatio (source.getReadPointer (0) + 30000, 8192, sr, inHz);
+
+        PsolaShifter shifter;
+        shifter.prepare (sr, 55.0f, blockSize);
+        shifter.setMinFrequency (90.0f);
+
+        std::vector<float> out ((size_t) total, 0.0f);
+
+        PitchDetector det;
+        PitchStabilizer stab;
+        det.prepare (sr);
+        det.setInputType (InputType::altoTenor);
+        stab.prepare (sr, blockSize);
+        const int frame = det.getFrameSize();
+
+        float period = (float) (sr / inHz);
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            if (pos >= frame)
+            {
+                const auto raw = det.process (source.getReadPointer (0) + pos - frame);
+                const auto st = stab.process (raw, rangeForInputType (InputType::altoTenor));
+                if (st.voiced && st.frequencyHz > 1.0f)
+                    period = (float) (sr / st.frequencyHz);
+            }
+
+            shifter.process (source.getReadPointer (0) + pos, out.data() + pos, blockSize,
+                             ratio, 1.0f, period, true);
+        }
+
+        const int skip = shifter.getLatencySamples() + 30000;
+        const float outputScore = inharmonicRatio (out.data() + skip, 8192, sr, inHz * ratio);
+
+        return std::make_pair (inputScore, outputScore);
+    };
+
+    for (float noiseDb : { -60.0f, -34.0f })
+    {
+        const auto clean = measure (1.0f, noiseDb);
+        const auto third = measure (1.189f, noiseDb);
+        const auto down  = measure (0.5f, noiseDb);
+        const auto up    = measure (2.0f, noiseDb);
+
+        std::printf ("         breath %.0f dB : input %.3f | ratio 1.0 %.3f | 3rd %.3f | 8ve down %.3f | 8ve up %.3f\n",
+                     noiseDb, clean.first, clean.second, third.second, down.second, up.second);
+    }
+
+    const auto result = measure (1.189f, -34.0f);
+    check (result.second < result.first * 3.0f + 0.10f,
+           "shifting a breathy voice does not multiply its inharmonic energy",
+           "input " + juce::String (result.first, 3) + " -> output " + juce::String (result.second, 3));
+}
+
+static void testShifterQualityAcrossRatios()
+{
+    std::printf ("\nShifter quality vs ratio (inharmonic energy, lower is cleaner)\n");
+
+    const double sr = 44100.0;
+    const double inHz = 220.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+
+    const float ratios[] = { 0.5f, 0.667f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f };
+    float worstDown = 0.0f, bestUp = 1.0f;
+
+    for (float ratio : ratios)
+    {
+        PsolaShifter shifter;
+        shifter.prepare (sr, 55.0f, blockSize);
+        shifter.setMinFrequency (90.0f);
+
+        juce::AudioBuffer<float> source (1, total);
+        fillTone (source, sr, inHz);
+
+        std::vector<float> out ((size_t) total, 0.0f);
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+            shifter.process (source.getReadPointer (0) + pos, out.data() + pos, blockSize,
+                             ratio, 1.0f, (float) (sr / inHz), true);
+
+        const int skip = shifter.getLatencySamples() + 20000;
+        const float ratioOut = inharmonicRatio (out.data() + skip, 8192, sr, inHz * ratio);
+
+        std::printf ("         ratio %.3f -> %7.2f Hz : inharmonic %.4f\n",
+                     ratio, inHz * ratio, ratioOut);
+
+        if (ratio < 1.0f) worstDown = juce::jmax (worstDown, ratioOut);
+        else              bestUp = juce::jmin (bestUp, ratioOut);
+    }
+
+    // Downward shifts space grains further apart than upward ones. If the grain
+    // length does not grow to match, the overlap-add window sum develops nulls
+    // between grains - and the output is divided by that sum, so the artefacts
+    // are amplified exactly where the signal is weakest.
+    check (worstDown < 0.05f, "downward shifts are as clean as upward ones",
+           "worst down " + juce::String (worstDown, 4) + " vs best up " + juce::String (bestUp, 4));
+}
+
+static void testHarmonyCleanliness()
+{
+    std::printf ("\nHarmony voice cleanliness (inharmonic energy, lower is cleaner)\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+    const double inHz = 220.0;      // A3
+
+    ScaleQuantizer q;
+    q.setKey (0);
+    q.setScale (1);
+
+    auto render = [&] (int numVoices, float formant, std::vector<float>& left)
+    {
+        HarmonyEngine harm;
+        harm.prepare (sr, blockSize, 55.0f);
+        harm.setRange (90.0f);
+
+        HarmonyEngine::Params p;
+        p.level = 1.0f;
+        p.anyEnabled = true;
+
+        const int degrees[4] = { 2, 4, -7, 7 };
+
+        for (int v = 0; v < numVoices; ++v)
+        {
+            auto& vp = p.voices[(size_t) v];
+            vp.enabled = true;
+            vp.degrees = degrees[v];
+            vp.level = 1.0f;
+            vp.pan = 0.0f;
+            vp.formant = formant;
+            vp.detuneCents = 0.0f;
+            vp.delayMs = 0.0f;
+        }
+
+        juce::AudioBuffer<float> source (1, total);
+        fillTone (source, sr, inHz);
+
+        left.assign ((size_t) total, 0.0f);
+        std::vector<float> right ((size_t) total, 0.0f);
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            harm.updateTargets (57.0f, 57.0f, true, q, p);
+            harm.process (source.getReadPointer (0) + pos,
+                          left.data() + pos, right.data() + pos, blockSize, p);
+        }
+
+        return harm.getShifterLatency() + 20000;
+    };
+
+    std::vector<float> buf;
+
+    // One voice, a third up (A3 -> C4 = 261.63 Hz), at three formant settings.
+    int skip = render (1, 1.00f, buf);
+    const float flat = inharmonicRatio (buf.data() + skip, 8192, sr, 261.626);
+
+    skip = render (1, 1.12f, buf);
+    const float up = inharmonicRatio (buf.data() + skip, 8192, sr, 261.626);
+
+    skip = render (1, 0.90f, buf);
+    const float down = inharmonicRatio (buf.data() + skip, 8192, sr, 261.626);
+
+    std::printf ("         1 voice: formant 1.00 = %.3f | 1.12 = %.3f | 0.90 = %.3f\n",
+                 flat, up, down);
+
+    check (up < flat * 2.5f + 0.05f, "formant shift up does not wreck the voice",
+           juce::String (flat, 3) + " -> " + juce::String (up, 3));
+    check (down < flat * 2.5f + 0.05f, "formant shift down does not wreck the voice",
+           juce::String (flat, 3) + " -> " + juce::String (down, 3));
+
+    check (flat < 0.30f, "a single unshifted-formant voice is clean",
+           juce::String (flat, 3));
+}
+
+
+static void testHarmonySilentOnConsonants()
+{
+    std::printf ("\nHarmony behaviour during unvoiced material\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 4.0);
+
+    ScaleQuantizer q;
+    q.setKey (0);
+    q.setScale (1);
+
+    // A phrase: sung notes separated by fricatives, which is what a real vocal
+    // looks like and what a steady test tone never exercises.
+    juce::AudioBuffer<float> source (1, total);
+    juce::Random rng (4242);
+    std::vector<bool> voicedAt ((size_t) total, false);
+    {
+        auto* d = source.getWritePointer (0);
+        double phase = 0.0;
+
+        for (int i = 0; i < total; ++i)
+        {
+            const double t = (double) i / sr;
+            const bool voiced = std::fmod (t, 0.40) < 0.28;   // 280 ms note, 120 ms consonant
+            voicedAt[(size_t) i] = voiced;
+
+            if (voiced)
+            {
+                phase += 2.0 * juce::MathConstants<double>::pi * 220.0 / sr;
+                double v = 0.0;
+                for (int h = 1; h <= 6; ++h)
+                    v += std::sin (phase * h) / (double) h;
+
+                d[i] = (float) (v * 0.18);
+            }
+            else
+            {
+                d[i] = (rng.nextFloat() * 2.0f - 1.0f) * 0.12f;
+            }
+        }
+    }
+
+    HarmonyEngine harm;
+    harm.prepare (sr, blockSize, 55.0f);
+    harm.setRange (90.0f);
+
+    HarmonyEngine::Params p;
+    p.level = 1.0f;
+    p.anyEnabled = true;
+
+    for (int v = 0; v < 2; ++v)
+    {
+        auto& vp = p.voices[(size_t) v];
+        vp.enabled = true;
+        vp.degrees = (v == 0 ? 2 : 4);
+        vp.level = 1.0f;
+        vp.pan = 0.0f;
+        vp.formant = 1.0f;
+        vp.detuneCents = 0.0f;
+        vp.delayMs = 0.0f;
+    }
+
+    PitchDetector det;
+    PitchStabilizer stab;
+    TransientGuard guard;
+    det.prepare (sr);
+    det.setInputType (InputType::altoTenor);
+    stab.prepare (sr, blockSize);
+    guard.prepare (sr, blockSize);
+    guard.setSensitivity (0.6f);
+
+    std::vector<float> left ((size_t) total, 0.0f), right ((size_t) total, 0.0f);
+    const int frame = det.getFrameSize();
+
+    for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+    {
+        bool voiced = false;
+        float midi = 57.0f;
+
+        if (pos >= frame)
+        {
+            const auto raw = det.process (source.getReadPointer (0) + pos - frame);
+            const auto st = stab.process (raw, rangeForInputType (InputType::altoTenor));
+            voiced = st.voiced;
+            if (voiced) midi = st.midiNote;
+        }
+
+        // Same wiring the engine uses: the guard ducks the harmony bus out of
+        // consonants that the pitch tracker is still holding a note through.
+        const float consonant = guard.process (source.getReadPointer (0) + pos, blockSize,
+                                               voiced ? 0.9f : 0.05f);
+        harm.setGate (1.0f - consonant);
+
+        harm.updateTargets (midi, midi, voiced, q, p);
+        harm.process (source.getReadPointer (0) + pos, left.data() + pos, right.data() + pos,
+                      blockSize, p);
+    }
+
+    // Compare harmony output energy during sung sections against consonants.
+    const int lat = harm.getShifterLatency();
+    double voicedEnergy = 0.0, unvoicedEnergy = 0.0;
+    int voicedCount = 0, unvoicedCount = 0;
+
+    for (int i = lat + 20000; i < total - lat; ++i)
+    {
+        // Account for the bus delay when deciding which section a sample is in.
+        const bool wasVoiced = voicedAt[(size_t) juce::jmax (0, i - lat)];
+        const double e = (double) left[(size_t) i] * left[(size_t) i];
+
+        if (wasVoiced) { voicedEnergy += e; ++voicedCount; }
+        else           { unvoicedEnergy += e; ++unvoicedCount; }
+    }
+
+    const float voicedRms = (float) std::sqrt (voicedEnergy / juce::jmax (1, voicedCount));
+    const float unvoicedRms = (float) std::sqrt (unvoicedEnergy / juce::jmax (1, unvoicedCount));
+    const float leak = unvoicedRms / juce::jmax (1.0e-6f, voicedRms);
+
+    std::printf ("         harmony RMS: sung %.4f | consonant %.4f | leak %.1f%%\n",
+                 voicedRms, unvoicedRms, leak * 100.0f);
+
+    // A regression guard, not a claim of correctness. Some energy here is
+    // legitimate - the gain release and the shifter's own tail both decay
+    // across the start of a consonant. The number to watch is whether it
+    // *grows*: that would mean voices are again passing the dry input through,
+    // which is what turns stacked harmony into flanged mush.
+    check (leak < 0.45f, "harmony energy during consonants stays within its release tail",
+           juce::String (leak * 100.0f, 1) + "% of sung level");
+}
+
+static void testHarmonyGainStaging()
+{
+    std::printf ("\nHarmony gain staging\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 2.5);
+
+    auto run = [&] (int numVoices)
+    {
+        CorrectionEngine engine;
+        engine.prepare (sr, blockSize, 2);
+
+        PitchFifo fifo;
+        CorrectionEngine::Settings s;
+        s.inputType = InputType::altoTenor;
+        s.retune.retuneMs = 20.0f;
+        s.key = 0;
+        s.scaleIndex = 1;              // C major
+        s.mix = 1.0f;
+        s.outputGain = 1.0f;
+
+        const int   degrees[4] = {  2,  4, -7,  7 };
+        const float pans[4]    = { -0.55f, 0.55f, -0.2f, 0.25f };
+
+        s.harmony.level = 0.7f;
+        s.harmony.anyEnabled = numVoices > 0;
+
+        for (int v = 0; v < numVoices; ++v)
+        {
+            auto& vp = s.harmony.voices[(size_t) v];
+            vp.enabled = true;
+            vp.degrees = degrees[v];
+            vp.level = 0.75f;
+            vp.pan = pans[v];
+            vp.formant = 1.0f;
+            vp.detuneCents = 0.0f;
+        }
+
+        juce::AudioBuffer<float> source (2, total);
+        fillTone (source, sr, 220.0);
+
+        juce::AudioBuffer<float> block (2, blockSize);
+        const int skip = engine.getLatencySamples() + (int) (sr * 0.7);
+
+        float peak = 0.0f;
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            for (int ch = 0; ch < 2; ++ch)
+                block.copyFrom (ch, 0, source, ch, pos, blockSize);
+
+            engine.process (block, s, (double) pos / sr, -1.0, nullptr, 0.0f, false, fifo);
+
+            if (pos > skip)
+                peak = juce::jmax (peak, block.getMagnitude (0, blockSize));
+        }
+
+        return peak;
+    };
+
+    const float lead = run (0);
+    const float v1 = run (1);
+    const float v2 = run (2);
+    const float v3 = run (3);
+    const float v4 = run (4);
+
+    std::printf ("         lead %.3f | +1 %.3f | +2 %.3f | +3 %.3f | +4 %.3f\n",
+                 lead, v1, v2, v3, v4);
+
+    // Anything at or past full scale clips in the host and is heard as grit.
+    check (v4 < 0.99f, "four voices stay below full scale",
+           juce::String (v4, 3));
+    check (v3 < 0.99f, "three voices stay below full scale",
+           juce::String (v3, 3));
+
+    // Adding voices should thicken the sound, not just make it louder.
+    check (v4 < v1 * 1.9f, "level does not grow in proportion to voice count",
+           "1 voice " + juce::String (v1, 3) + " -> 4 voices " + juce::String (v4, 3));
+}
+
 static void testKeyDetection()
 {
     std::printf ("\nAuto-Key detection\n");
@@ -864,6 +1358,11 @@ int main()
     testEndToEndCorrection();
     testDiatonicHarmony();
     testHarmonyRendering();
+    testShifterOnRealisticVoice();
+    testShifterQualityAcrossRatios();
+    testHarmonyCleanliness();
+    testHarmonySilentOnConsonants();
+    testHarmonyGainStaging();
     testKeyDetection();
     testTransientGuard();
     testFormantProcessor();

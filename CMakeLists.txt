@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(HelixTune VERSION 1.0.0 LANGUAGES C CXX)
+project(HelixTune VERSION 1.0.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -184,3 +184,57 @@ target_link_libraries(HelixTuneBanner PRIVATE
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
+
+# ---------------------------------------------------------------------------
+# Preset loading regression test
+# ---------------------------------------------------------------------------
+# Drives the real processor, because the crash this guards against only appears
+# when the preset table is actually iterated.
+juce_add_console_app(HelixTunePresetTest PRODUCT_NAME "HelixTunePresetTest")
+
+target_sources(HelixTunePresetTest PRIVATE
+    Tests/PresetTest.cpp
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp
+    Source/DSP/PitchDetector.cpp
+    Source/DSP/PitchStabilizer.cpp
+    Source/DSP/PsolaShifter.cpp
+    Source/DSP/FormantProcessor.cpp
+    Source/DSP/KeyDetector.cpp
+    Source/DSP/TransientGuard.cpp
+    Source/DSP/HarmonyEngine.cpp
+    Source/DSP/ScaleQuantizer.cpp
+    Source/DSP/RetuneEngine.cpp
+    Source/DSP/VibratoGenerator.cpp
+    Source/DSP/CorrectionEngine.cpp
+    Source/Model/Parameters.cpp
+    Source/Model/PitchTrack.cpp
+    Source/Model/GraphModel.cpp
+    Source/Model/PresetManager.cpp
+    Source/Model/UpdateChecker.cpp
+    Source/UI/FuturisticLookAndFeel.cpp
+    Source/UI/Widgets/NeonKnob.cpp
+    Source/UI/Widgets/ScaleKeyboard.cpp
+    Source/UI/Widgets/PitchScope.cpp
+    Source/UI/Widgets/AutoKeyDisplay.cpp
+    Source/UI/AutoModePanel.cpp
+    Source/UI/HarmonyPanel.cpp
+    Source/UI/Graph/GraphEditorPanel.cpp
+    Source/UI/Graph/PianoRollView.cpp)
+
+target_include_directories(HelixTunePresetTest PRIVATE Source)
+
+target_compile_definitions(HelixTunePresetTest PRIVATE
+    HELIX_VERSION="${PROJECT_VERSION}"
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+
+target_link_libraries(HelixTunePresetTest PRIVATE
+    juce::juce_audio_utils
+    juce::juce_dsp
+    PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)
+
+add_test(NAME presets COMMAND HelixTunePresetTest)

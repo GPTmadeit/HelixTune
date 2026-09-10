@@ -32,6 +32,15 @@ public:
         allocation - so the input type can change while audio is running. */
     void setMinFrequency (float hz) noexcept;
 
+    /** What to emit when the input has no pitch to shift.
+
+        The lead voice must pass consonants through untouched, so it fades to
+        the dry signal. A harmony voice must not: it has nothing to sing on a
+        consonant, and passing the input through means every unvoiced moment
+        becomes another delayed copy of the lead. Several of those summed is
+        heard as gritty, flanged mush that worsens with each voice added. */
+    void setPassDryWhenUnvoiced (bool shouldPassDry) noexcept { passDryWhenUnvoiced = shouldPassDry; }
+
     void reset() noexcept;
 
     /** Fixed algorithmic delay, in samples. PSOLA needs the input that a grain
@@ -75,6 +84,7 @@ private:
 
     float lastPeriod = 200.0f;
     float voicedGain = 0.0f;     // smoothed dry/wet crossfade
+    bool  passDryWhenUnvoiced = true;
 
     std::vector<float> window;   // Hann, indexed by normalised grain phase
     int windowSize = 0;

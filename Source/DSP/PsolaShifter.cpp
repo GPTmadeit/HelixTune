@@ -280,7 +280,9 @@ void PsolaShifter::process (const float* input, float* output, int numSamples,
         winAccum[(size_t) o] = 0.0f;
 
         voicedGain += (target - voicedGain) * coeff;
-        output[i] = wet * voicedGain + dry * (1.0f - voicedGain);
+
+        output[i] = passDryWhenUnvoiced ? (wet * voicedGain + dry * (1.0f - voicedGain))
+                                        : (wet * voicedGain);
     }
 }
 

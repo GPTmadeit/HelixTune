@@ -50,6 +50,16 @@ public:
         lead path that has additional stages (the formant filter) in it. */
     void setAlignmentDelay (int samples) noexcept;
 
+    /** Overall gate, 0 silences the bus. Driven by the consonant detector.
+
+        The pitch tracker deliberately holds its last note across brief unvoiced
+        gaps so the lead does not drop correction mid-word. That is right for
+        the lead and wrong for harmony: it leaves the voices pitch-shifting a
+        fricative for tens of milliseconds, which is aperiodic material being
+        forced through a pitch-synchronous algorithm - audible as grit, and
+        worse with every voice added. */
+    void setGate (float amount01) noexcept { gate = juce::jlimit (0.0f, 1.0f, amount01); }
+
     /** Once per analysis hop: work out where each voice should sing. */
     void updateTargets (float leadMidi, float detectedMidi, bool voiced,
                         const ScaleQuantizer& scale, const Params& p) noexcept;
@@ -76,6 +86,7 @@ private:
     float lastPeriod = 200.0f;
     bool  lastVoiced = false;
     int   alignmentDelay = 0;
+    float gate = 1.0f;
     int   maxDelaySamples = 0;
 
     std::array<Voice, maxVoices> voices;

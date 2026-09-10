@@ -11,7 +11,12 @@ namespace
     struct FactoryPreset
     {
         const char* name;
-        std::initializer_list<Setting> settings;
+
+        // Must own its elements. A std::initializer_list member does not: the
+        // backing array lives only as long as the full-expression that created
+        // it, so storing one leaves a dangling pointer the moment the table is
+        // constructed, and loading a preset then walks freed memory.
+        std::vector<Setting> settings;
     };
 
     // Values are in each parameter's own units, not normalised.

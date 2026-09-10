@@ -262,6 +262,8 @@ void CorrectionEngine::runAnalysisHop (const Settings& s, double hopTime, double
     if (det.voiced && det.frequencyHz > 1.0f)
         curPeriod = (float) (fs / (double) det.frequencyHz);
 
+    // The lead rides through consonants; the harmony bus ducks out of them.
+    harmony.setGate (1.0f - consonant);
     harmony.updateTargets (ro.outputMidi, det.midiNote, det.voiced, quantizer, s.harmony);
 
     // --- hand the frame to the editor -------------------------------------

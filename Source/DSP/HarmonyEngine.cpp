@@ -15,6 +15,11 @@ void HarmonyEngine::prepare (double sampleRate, int maxBlockSize, float lowestSu
     for (auto& v : voices)
     {
         v.shifter.prepare (sampleRate, lowestSupportedHz, maxBlockSize);
+
+        // A harmony voice falls silent on consonants instead of echoing the
+        // lead. Four delayed copies of the dry input is what made stacked
+        // voices sound gritty.
+        v.shifter.setPassDryWhenUnvoiced (false);
         v.scratch.assign ((size_t) juce::jmax (1, maxBlockSize), 0.0f);
         v.delayLine.assign ((size_t) maxDelaySamples, 0.0f);
         v.delayPos = 0;
@@ -81,7 +86,7 @@ void HarmonyEngine::updateTargets (float leadMidi, float detectedMidi, bool voic
         const float angle = (juce::jlimit (-1.0f, 1.0f, vp.pan) + 1.0f) * 0.25f
                           * juce::MathConstants<float>::pi;
 
-        const float g = vp.level * p.level;
+        const float g = vp.level * p.level * gate;
         v.gainL = g * std::cos (angle);
         v.gainR = g * std::sin (angle);
 
@@ -129,7 +134,10 @@ void HarmonyEngine::process (const float* monoInput, float* left, float* right,
             continue;
         }
 
-        const float smoothing = 1.0f - std::exp (-1.0f / (float) (fs * 0.020));
+        // Asymmetric: ease in, but get out of the way quickly. A slow release
+        // leaves the voice audible well into a consonant.
+        const float attack  = 1.0f - std::exp (-1.0f / (float) (fs * 0.025));
+        const float release = 1.0f - std::exp (-1.0f / (float) (fs * 0.005));
 
         for (int n = 0; n < numSamples; ++n)
         {
@@ -141,8 +149,10 @@ void HarmonyEngine::process (const float* monoInput, float* left, float* right,
 
             const float s = v.delayLine[(size_t) readPos];
 
-            v.smoothedGainL += (v.gainL - v.smoothedGainL) * smoothing;
-            v.smoothedGainR += (v.gainR - v.smoothedGainR) * smoothing;
+            v.smoothedGainL += (v.gainL - v.smoothedGainL)
+                             * (v.gainL > v.smoothedGainL ? attack : release);
+            v.smoothedGainR += (v.gainR - v.smoothedGainR)
+                             * (v.gainR > v.smoothedGainR ? attack : release);
 
             left[n]  += s * v.smoothedGainL;
             right[n] += s * v.smoothedGainR;
