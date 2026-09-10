@@ -74,6 +74,7 @@ target_sources(HelixTune PRIVATE
     Source/Model/PitchTrack.cpp
     Source/Model/GraphModel.cpp
     Source/Model/PresetManager.cpp
+    Source/Model/UpdateChecker.cpp
 
     Source/UI/FuturisticLookAndFeel.cpp
     Source/UI/Widgets/NeonKnob.cpp
@@ -160,3 +161,26 @@ target_link_libraries(HelixTuneDspTest PRIVATE
 
 enable_testing()
 add_test(NAME dsp COMMAND HelixTuneDspTest)
+
+# ---------------------------------------------------------------------------
+# Repository artwork
+# ---------------------------------------------------------------------------
+# Banner and icon are rendered from the plugin's own palette and drawing code,
+# so the branding cannot drift away from the product.
+juce_add_console_app(HelixTuneBanner PRODUCT_NAME "HelixTuneBanner")
+
+target_sources(HelixTuneBanner PRIVATE
+    Tools/BannerRenderer.cpp
+    Source/UI/FuturisticLookAndFeel.cpp)
+target_include_directories(HelixTuneBanner PRIVATE Source)
+
+target_compile_definitions(HelixTuneBanner PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+
+target_link_libraries(HelixTuneBanner PRIVATE
+    juce::juce_gui_basics
+    PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags)

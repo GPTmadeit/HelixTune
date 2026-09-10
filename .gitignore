@@ -1,5 +1,7 @@
+# Build output lives outside the tree; see README.
 build/
 out/
+dist/
 .vs/
 .vscode/
 *.user

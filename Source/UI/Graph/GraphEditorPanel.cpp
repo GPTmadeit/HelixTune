@@ -100,32 +100,53 @@ void ToolButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
     const auto area = getLocalBounds().toFloat().reduced (1.0f);
     const bool on = getToggleState();
 
-    g.setColour (on ? colours::cyan.withAlpha (0.20f)
-                    : (down ? colours::bgSunken
-                            : (highlighted ? colours::bgRaised.brighter (0.12f) : colours::bgRaised)));
-    g.fillRoundedRectangle (area, 4.0f);
-
-    g.setColour (on ? colours::cyan.withAlpha (0.85f)
-                    : (highlighted ? colours::cyan.withAlpha (0.35f) : colours::outline));
-    g.drawRoundedRectangle (area, 4.0f, 1.0f);
-
-    const auto glyph = glyphFor (tool, area.reduced (area.getWidth() * 0.24f));
-    const auto colour = on ? colours::cyan.brighter (0.4f)
-                           : (highlighted ? colours::text : colours::textDim);
-
-    // Solid shapes want filling, stroked ones want stroking; the pointer and
-    // the eraser are the two closed glyphs.
-    if (tool == GraphTool::arrow || tool == GraphTool::eraser || tool == GraphTool::note)
+    if (on)
     {
-        g.setColour (colour);
-        g.fillPath (glyph);
+        juce::Path glow;
+        glow.addRoundedRectangle (area, 5.0f);
+        g.setColour (colours::cyan.withAlpha (0.18f));
+        g.strokePath (glow, juce::PathStrokeType (4.0f));
     }
+
+    if (on)
+        g.setGradientFill (juce::ColourGradient (colours::cyan.withAlpha (0.38f), area.getCentreX(), area.getY(),
+                                                 colours::cyan.withAlpha (0.18f), area.getCentreX(), area.getBottom(), false));
+    else if (down)
+        g.setColour (colours::bgSunken);
     else
+        g.setGradientFill (juce::ColourGradient (colours::bgRaised.brighter (highlighted ? 0.30f : 0.14f),
+                                                 area.getCentreX(), area.getY(),
+                                                 colours::bgRaised.darker (0.16f), area.getCentreX(), area.getBottom(), false));
+
+    g.fillRoundedRectangle (area, 5.0f);
+
+    g.setColour (on ? colours::cyan
+                    : (highlighted ? colours::cyan.withAlpha (0.8f) : colours::outline));
+    g.drawRoundedRectangle (area, 5.0f, on ? 1.6f : 1.2f);
+
+    if (! down)
     {
-        g.setColour (colour);
-        g.strokePath (glyph, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved,
-                                                   juce::PathStrokeType::rounded));
+        g.setColour (juce::Colours::white.withAlpha (on ? 0.14f : 0.07f));
+        g.drawLine (area.getX() + 5.0f, area.getY() + 1.2f,
+                    area.getRight() - 5.0f, area.getY() + 1.2f, 1.0f);
     }
+
+    const auto glyph = glyphFor (tool, area.reduced (area.getWidth() * 0.26f));
+
+    // An icon-only control has no label to fall back on, so the glyph itself
+    // has to carry full contrast in every state.
+    const auto colour = on ? juce::Colours::white
+                           : (highlighted ? juce::Colours::white : colours::text.withAlpha (0.82f));
+
+    g.setColour (colour);
+
+    // Solid shapes want filling, stroked ones want stroking; the pointer, the
+    // note and the eraser are the closed glyphs.
+    if (tool == GraphTool::arrow || tool == GraphTool::eraser || tool == GraphTool::note)
+        g.fillPath (glyph);
+    else
+        g.strokePath (glyph, juce::PathStrokeType (1.7f, juce::PathStrokeType::curved,
+                                                   juce::PathStrokeType::rounded));
 }
 
 // ---------------------------------------------------------------------------

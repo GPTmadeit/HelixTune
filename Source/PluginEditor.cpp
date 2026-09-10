@@ -58,6 +58,15 @@ HelixTuneEditor::HelixTuneEditor (HelixTuneProcessor& p)
 
     refreshPresetList();
 
+    // The version readout doubles as the update control: one affordance, and
+    // it is always there rather than appearing only when there is news.
+    versionButton.setColour (juce::TextButton::buttonOnColourId, colours::lime);
+    versionButton.setButtonText ("v" + UpdateChecker::getCurrentVersion());
+    versionButton.onClick = [this] { showUpdateMenu(); };
+    addAndMakeVisible (versionButton);
+
+    updater.checkInBackground();
+
     setResizable (true, true);
     setResizeLimits (1000, 620, 2400, 1500);
     setSize (1140, 680);
@@ -93,6 +102,73 @@ void HelixTuneEditor::refreshPresetList (const juce::String& select)
         if (index >= 0)
             presetBox.setSelectedItemIndex (index, juce::dontSendNotification);
     }
+}
+
+void HelixTuneEditor::refreshUpdateButton()
+{
+    const auto st = updater.getStatus();
+
+    if (updater.isDownloading())
+    {
+        const float p = updater.getDownloadProgress();
+        versionButton.setButtonText (p < 0.0f ? "FAILED"
+                                              : "DOWNLOADING " + juce::String ((int) (p * 100.0f)) + "%");
+        versionButton.setToggleState (true, juce::dontSendNotification);
+        return;
+    }
+
+    if (st.updateAvailable)
+    {
+        versionButton.setButtonText (st.latestVersion + " AVAILABLE");
+        versionButton.setToggleState (true, juce::dontSendNotification);
+    }
+    else
+    {
+        versionButton.setButtonText ("v" + UpdateChecker::getCurrentVersion());
+        versionButton.setToggleState (false, juce::dontSendNotification);
+    }
+}
+
+void HelixTuneEditor::showUpdateMenu()
+{
+    const auto st = updater.getStatus();
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader ("HELIX Tune v" + UpdateChecker::getCurrentVersion());
+
+    if (st.updateAvailable)
+    {
+        menu.addItem (1, "Download and install " + st.latestVersion,
+                      st.installerUrl.isNotEmpty() && ! updater.isDownloading());
+        menu.addItem (2, "Open release page");
+        menu.addSeparator();
+    }
+    else if (st.checked)
+    {
+        menu.addItem (99, "Up to date", false);
+        menu.addSeparator();
+    }
+
+    menu.addItem (3, "Check for updates now", ! updater.isDownloading());
+    menu.addItem (4, "Check automatically", true, updater.areChecksEnabled());
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (versionButton),
+        [this] (int result)
+        {
+            const auto s = updater.getStatus();
+
+            switch (result)
+            {
+                case 1: updater.downloadAndLaunchInstaller(); break;
+                case 2: juce::URL (s.releaseUrl.isNotEmpty() ? s.releaseUrl
+                                                             : UpdateChecker::getReleasesPageUrl())
+                            .launchInDefaultBrowser();
+                        break;
+                case 3: updater.checkInBackground (true); break;
+                case 4: updater.setChecksEnabled (! updater.areChecksEnabled()); break;
+                default: break;
+            }
+        });
 }
 
 void HelixTuneEditor::promptSavePreset()
@@ -169,6 +245,12 @@ void HelixTuneEditor::timerCallback()
     if (bannerPhase > 1.0f)
         bannerPhase -= 1.0f;
 
+    if (++updatePollCounter >= 15)
+    {
+        updatePollCounter = 0;
+        refreshUpdateButton();
+    }
+
     // Keep the mode buttons honest if the host automates the parameter.
     const bool graph = *processor.apvts.getRawParameterValue (params::graphMode) > 0.5f;
     if (graph != graphPanel.isVisible())
@@ -207,9 +289,12 @@ void HelixTuneEditor::resized()
     // Presets take the middle of the bar; the latency readout tucks under the
     // wordmark, which is the only space left that nothing else wants.
     bar.removeFromLeft (18);
-    presetBox.setBounds (bar.removeFromLeft (juce::jmin (196, juce::jmax (0, bar.getWidth() - 70))));
+    presetBox.setBounds (bar.removeFromLeft (juce::jmin (180, juce::jmax (0, bar.getWidth() - 210))));
     bar.removeFromLeft (6);
     savePresetButton.setBounds (bar.removeFromLeft (54));
+
+    bar.removeFromLeft (10);
+    versionButton.setBounds (bar.removeFromLeft (juce::jmin (132, juce::jmax (0, bar.getWidth()))));
 
     latencyBounds = headerBounds.reduced (14, 0).withWidth (168)
                         .removeFromBottom (13).translated (0, -5);
@@ -263,11 +348,6 @@ void HelixTuneEditor::paint (juce::Graphics& g)
     g.setColour (colours::text);
     g.setFont (FuturisticLookAndFeel::uiFont (23.0f));
     g.drawText ("TUNE", mark.withTrimmedLeft (70).withWidth (64), juce::Justification::centredLeft, false);
-
-    g.setColour (colours::textFaint);
-    g.setFont (FuturisticLookAndFeel::monoFont (8.5f));
-    g.drawText (juce::String ("v") + HELIX_VERSION,
-                mark.withTrimmedLeft (134), juce::Justification::centredLeft, false);
 
     // slider captions and the latency readout
     g.setColour (colours::textFaint);

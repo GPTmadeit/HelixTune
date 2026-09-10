@@ -5,6 +5,7 @@
 #include "UI/AutoModePanel.h"
 #include "UI/HarmonyPanel.h"
 #include "Model/PresetManager.h"
+#include "Model/UpdateChecker.h"
 #include "UI/Graph/GraphEditorPanel.h"
 
 namespace helix
@@ -26,6 +27,8 @@ private:
     void setView (int view);
     void refreshPresetList (const juce::String& select = {});
     void promptSavePreset();
+    void showUpdateMenu();
+    void refreshUpdateButton();
 
     HelixTuneProcessor& processor;
     ui::FuturisticLookAndFeel lookAndFeel;
@@ -55,6 +58,10 @@ private:
     PresetManager presets;
     juce::ComboBox presetBox;
     juce::TextButton savePresetButton { "SAVE" };
+
+    UpdateChecker updater;
+    juce::TextButton versionButton;
+    int updatePollCounter = 0;
 
     // Drained from the audio thread each tick and fanned out to both panels,
     // so the graph editor keeps capturing even while auto mode is on screen.

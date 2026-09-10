@@ -236,6 +236,7 @@ void FuturisticLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleBut
 {
     const auto area = b.getLocalBounds().toFloat();
     const bool on = b.getToggleState();
+    const bool enabled = b.isEnabled();
 
     const auto accent = b.findColour (juce::TextButton::buttonOnColourId, true);
     const juce::Colour c = accent.isTransparent() ? colours::cyan : accent;
@@ -248,35 +249,44 @@ void FuturisticLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleBut
                         .withY (area.getCentreY() - switchH * 0.5f)
                         .withX (area.getX());
 
-    g.setColour (on ? c.withAlpha (0.22f) : colours::bgSunken);
+    if (on && enabled)
+    {
+        juce::Path glow;
+        glow.addRoundedRectangle (sw, switchH * 0.5f);
+        g.setColour (c.withAlpha (0.14f));
+        g.strokePath (glow, juce::PathStrokeType (4.0f));
+    }
+
+    g.setColour (! enabled ? colours::bgPanel
+                 : on      ? c.withAlpha (0.34f)
+                           : colours::bgSunken);
     g.fillRoundedRectangle (sw, switchH * 0.5f);
 
-    g.setColour (on ? c.withAlpha (0.75f) : colours::outline);
-    g.drawRoundedRectangle (sw.reduced (0.5f), switchH * 0.5f, 1.0f);
+    // The off state needs a visible track outline too, or a disabled control
+    // and an off control look identical.
+    g.setColour (! enabled ? colours::outline.withAlpha (0.4f)
+                 : on      ? c
+                           : (highlighted ? c.withAlpha (0.6f) : colours::outline));
+    g.drawRoundedRectangle (sw.reduced (0.5f), switchH * 0.5f, on ? 1.5f : 1.2f);
 
     const float knobR = switchH * 0.5f - 3.0f;
     const float knobX = on ? sw.getRight() - knobR - 3.0f : sw.getX() + knobR + 3.0f;
     const auto knob = juce::Rectangle<float> (knobR * 2.0f, knobR * 2.0f)
                           .withCentre ({ knobX, sw.getCentreY() });
 
-    if (on)
-        glowEllipse (g, knob, c, 1.5f);
-
-    g.setColour (on ? c.brighter (0.6f) : colours::textFaint);
+    g.setColour (! enabled ? colours::textFaint.withAlpha (0.5f)
+                 : on      ? c.brighter (0.7f)
+                           : colours::textDim);
     g.fillEllipse (knob);
 
-    const auto textArea = area.withTrimmedLeft (switchW + 8.0f);
+    const auto textArea = area.withTrimmedLeft (switchW + 9.0f);
     if (textArea.getWidth() > 4.0f)
     {
-        g.setColour (on ? colours::text : colours::textDim);
+        g.setColour (! enabled ? colours::textFaint
+                     : on      ? colours::text
+                               : colours::text.withAlpha (0.72f));
         g.setFont (uiFont (juce::jmin (13.0f, area.getHeight() * 0.62f), on));
         g.drawText (b.getButtonText(), textArea, juce::Justification::centredLeft, true);
-    }
-
-    if (highlighted)
-    {
-        g.setColour (c.withAlpha (0.10f));
-        g.fillRoundedRectangle (area, 4.0f);
     }
 }
 
@@ -285,64 +295,125 @@ void FuturisticLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Butto
 {
     const auto area = b.getLocalBounds().toFloat().reduced (0.5f);
     const bool on = b.getToggleState();
+    const bool enabled = b.isEnabled();
+    const float corner = 5.0f;
 
     const auto accent = b.findColour (juce::TextButton::buttonOnColourId, true);
     const juce::Colour c = accent.isTransparent() ? colours::cyan : accent;
 
-    g.setColour (on ? c.withAlpha (0.20f)
-                    : (down ? colours::bgSunken
-                            : (highlighted ? colours::bgRaised.brighter (0.10f) : colours::bgRaised)));
-    g.fillRoundedRectangle (area, 4.0f);
+    if (! enabled)
+    {
+        // Unmistakably inert: flat fill, no border light, no highlight.
+        g.setColour (colours::bgPanel);
+        g.fillRoundedRectangle (area, corner);
+        g.setColour (colours::outline.withAlpha (0.35f));
+        g.drawRoundedRectangle (area, corner, 1.0f);
+        return;
+    }
 
-    g.setColour (on ? c.withAlpha (0.85f)
-                    : (highlighted ? c.withAlpha (0.42f) : colours::outline));
-    g.drawRoundedRectangle (area, 4.0f, on ? 1.4f : 1.0f);
+    // A vertical gradient is what makes a control read as a raised, pressable
+    // object rather than a flat patch of panel. Pressed inverts it.
+    if (on)
+    {
+        g.setGradientFill (juce::ColourGradient (c.withAlpha (0.38f), area.getCentreX(), area.getY(),
+                                                 c.withAlpha (0.20f), area.getCentreX(), area.getBottom(), false));
+    }
+    else if (down)
+    {
+        g.setGradientFill (juce::ColourGradient (colours::bgSunken, area.getCentreX(), area.getY(),
+                                                 colours::bgRaised.darker (0.2f), area.getCentreX(), area.getBottom(), false));
+    }
+    else
+    {
+        const float lift = highlighted ? 0.20f : 0.0f;
+        g.setGradientFill (juce::ColourGradient (colours::bgRaised.brighter (0.14f + lift), area.getCentreX(), area.getY(),
+                                                 colours::bgRaised.darker (0.16f), area.getCentreX(), area.getBottom(), false));
+    }
+
+    g.fillRoundedRectangle (area, corner);
+
+    g.setColour (on ? c
+                    : (highlighted ? c.withAlpha (0.80f) : colours::outline));
+    g.drawRoundedRectangle (area, corner, on ? 1.6f : 1.2f);
+
+    if (! down)
+    {
+        // A single bright pixel along the top edge reads as a lit bevel.
+        g.setColour (juce::Colours::white.withAlpha (on ? 0.14f : 0.07f));
+        g.drawLine (area.getX() + corner, area.getY() + 1.2f,
+                    area.getRight() - corner, area.getY() + 1.2f, 1.0f);
+    }
 
     if (on)
     {
         juce::Path p;
-        p.addRoundedRectangle (area, 4.0f);
-        g.setColour (c.withAlpha (0.12f));
+        p.addRoundedRectangle (area, corner);
+        g.setColour (c.withAlpha (0.16f));
         g.strokePath (p, juce::PathStrokeType (4.0f));
     }
 }
 
 void FuturisticLookAndFeel::drawButtonText (juce::Graphics& g, juce::TextButton& b,
-                                            bool highlighted, bool)
+                                            bool highlighted, bool down)
 {
     const bool on = b.getToggleState();
+    const bool enabled = b.isEnabled();
+
     g.setFont (getTextButtonFont (b, b.getHeight()));
-    g.setColour (on ? juce::Colours::white : (highlighted ? colours::text : colours::textDim));
-    g.drawText (b.getButtonText(), b.getLocalBounds(), juce::Justification::centred, true);
+
+    // Label contrast is the whole point of a button. Dim grey on dark grey
+    // reads as decoration; these steps keep every state clearly legible.
+    g.setColour (! enabled  ? colours::textFaint
+                 : on       ? juce::Colours::white
+                 : highlighted ? juce::Colours::white
+                              : colours::text.withAlpha (0.86f));
+
+    auto area = b.getLocalBounds();
+    if (down)
+        area.translate (0, 1);
+
+    g.drawText (b.getButtonText(), area, juce::Justification::centred, true);
 }
 
-void FuturisticLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool,
+void FuturisticLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool down,
                                           int, int, int, int, juce::ComboBox& box)
 {
-    const auto area = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (0.5f);
-    const bool focused = box.hasKeyboardFocus (false) || box.isMouseOver();
+    auto area = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (0.5f);
+    const bool hover = box.isMouseOver() || box.hasKeyboardFocus (false) || down;
+    const bool enabled = box.isEnabled();
 
-    g.setColour (colours::bgSunken);
-    g.fillRoundedRectangle (area, 4.0f);
+    g.setGradientFill (juce::ColourGradient (colours::bgRaised.brighter (hover ? 0.16f : 0.06f),
+                                             area.getCentreX(), area.getY(),
+                                             colours::bgSunken, area.getCentreX(), area.getBottom(), false));
+    g.fillRoundedRectangle (area, 5.0f);
 
-    g.setColour (focused ? colours::cyan.withAlpha (0.55f) : colours::outline);
-    g.drawRoundedRectangle (area, 4.0f, 1.0f);
+    g.setColour (! enabled ? colours::outline.withAlpha (0.4f)
+                           : (hover ? colours::cyan.withAlpha (0.8f) : colours::outline));
+    g.drawRoundedRectangle (area, 5.0f, hover ? 1.5f : 1.2f);
+
+    // A separated chevron well makes it obvious the field opens a list rather
+    // than accepting typing.
+    const float wellW = 22.0f;
+    auto well = area.removeFromRight (wellW);
+
+    g.setColour (colours::bgSunken.withAlpha (0.65f));
+    g.fillRoundedRectangle (well.reduced (1.5f), 3.0f);
 
     juce::Path arrow;
-    const float cx = (float) w - 14.0f;
-    const float cy = (float) h * 0.5f;
+    const float cx = well.getCentreX();
+    const float cy = well.getCentreY();
     arrow.startNewSubPath (cx - 4.0f, cy - 2.0f);
     arrow.lineTo (cx, cy + 3.0f);
     arrow.lineTo (cx + 4.0f, cy - 2.0f);
 
-    g.setColour (colours::cyan.withAlpha (focused ? 1.0f : 0.65f));
-    g.strokePath (arrow, juce::PathStrokeType (1.6f, juce::PathStrokeType::curved,
+    g.setColour (! enabled ? colours::textFaint : (hover ? colours::cyan : colours::cyan.withAlpha (0.8f)));
+    g.strokePath (arrow, juce::PathStrokeType (1.8f, juce::PathStrokeType::curved,
                                                juce::PathStrokeType::rounded));
 }
 
 void FuturisticLookAndFeel::positionComboBoxText (juce::ComboBox& box, juce::Label& label)
 {
-    label.setBounds (9, 1, box.getWidth() - 28, box.getHeight() - 2);
+    label.setBounds (10, 1, box.getWidth() - 34, box.getHeight() - 2);
     label.setFont (getComboBoxFont (box));
     label.setJustificationType (juce::Justification::centredLeft);
 }

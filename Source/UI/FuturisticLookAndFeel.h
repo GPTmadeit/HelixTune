@@ -19,12 +19,15 @@ namespace colours
     inline const juce::Colour bgRaised  { 0xff111a29 };
     inline const juce::Colour bgSunken  { 0xff03050a };
     inline const juce::Colour grid      { 0xff17202f };
-    inline const juce::Colour gridBold  { 0xff223047 };
-    inline const juce::Colour outline   { 0xff1e2b3f };
+    inline const juce::Colour gridBold  { 0xff2b3c55 };
+    inline const juce::Colour outline   { 0xff32465f };
 
-    inline const juce::Colour text      { 0xffdce9f5 };
-    inline const juce::Colour textDim   { 0xff657c93 };
-    inline const juce::Colour textFaint { 0xff3d4d61 };
+    // Contrast ratios against bgRaised, roughly: text 12:1, textDim 6:1,
+    // textFaint 3:1. Anything a user has to read while working sits at
+    // textDim or above; textFaint is for labels you glance at, never parse.
+    inline const juce::Colour text      { 0xffe6f1fb };
+    inline const juce::Colour textDim   { 0xffa3b6c9 };
+    inline const juce::Colour textFaint { 0xff64798f };
 
     inline const juce::Colour cyan      { 0xff00e5ff };
     inline const juce::Colour magenta   { 0xffff2d95 };
