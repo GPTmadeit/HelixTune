@@ -31,7 +31,8 @@ namespace
                 { params::formantCorrect, 1.0f }, { params::throatLength, 1.0f },
                 { params::classicMode, 0.0f }, { params::vibPitchAmount, 0.0f },
                 { params::pitchSmooth, 55.0f }, { params::sibilance, 60.0f },
-                { params::harmEnable, 0.0f } } },
+                { params::correctionAmount, 100.0f }, { params::noteTransition, 0.0f },
+                { params::harmOn, 0.0f } } },
 
             { "Natural Vocal", {
                 { params::retuneSpeed, 48.0f }, { params::humanize, 45.0f },
@@ -156,18 +157,7 @@ void PresetManager::loadFactory (int index)
     if (index < (int) basic.size())
     {
         for (const auto& s : basic[(size_t) index].settings)
-        {
-            // "harmEnable" on its own means "silence every voice".
-            if (juce::String (s.id) == params::harmEnable)
-            {
-                for (int v = 0; v < params::numHarmonyVoices; ++v)
-                    setParam (apvts, params::harmonyID (params::harmEnable, v), s.value);
-
-                continue;
-            }
-
             setParam (apvts, s.id, s.value);
-        }
 
         return;
     }
@@ -178,6 +168,9 @@ void PresetManager::loadFactory (int index)
 
     const auto& h = harmony[(size_t) hi];
 
+    // A harmony preset that left the bus switched off would appear to do
+    // nothing at all, so these always switch it on.
+    setParam (apvts, params::harmOn, 1.0f);
     setParam (apvts, params::harmLevel, h.level);
     setParam (apvts, params::harmSpread, h.spread);
 
@@ -244,6 +237,7 @@ void PresetManager::loadUser (const juce::String& name)
         // Replacing the state wholesale would bypass the host's automation
         // bookkeeping, so walk the parameters instead.
         if (tree.isValid())
+        {
             for (auto* param : apvts.processor.getParameters())
                 if (auto* withID = dynamic_cast<juce::AudioProcessorParameterWithID*> (param))
                 {
@@ -251,6 +245,12 @@ void PresetManager::loadUser (const juce::String& name)
                     if (child.isValid())
                         setParam (apvts, withID->paramID, (float) child.getProperty ("value"));
                 }
+
+            // Presets saved before the master switch existed get the same
+            // migration as old sessions - see params::legacyHarmonyWasOn.
+            if (! tree.getChildWithProperty ("id", params::harmOn).isValid())
+                setParam (apvts, params::harmOn, params::legacyHarmonyWasOn (tree) ? 1.0f : 0.0f);
+        }
     }
 }
 

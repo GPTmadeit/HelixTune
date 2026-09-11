@@ -18,6 +18,10 @@ HarmonyPanel::HarmonyPanel (HelixTuneProcessor& p)
     addAndMakeVisible (autoKey);
 
     auto& state = processor.apvts;
+
+    masterToggle.attach (state, params::harmOn);
+    addAndMakeVisible (masterToggle);
+
     levelKnob.attach (state, params::harmLevel);
     spreadKnob.attach (state, params::harmSpread);
     addAndMakeVisible (levelKnob);
@@ -44,6 +48,35 @@ HarmonyPanel::HarmonyPanel (HelixTuneProcessor& p)
         add (voiceFormant,  "Formant",  params::harmFormant);
         add (voiceDetune,   "Detune",   params::harmDetune);
     }
+
+    refreshMasterState();
+}
+
+void HarmonyPanel::refreshMasterState()
+{
+    const int on = *processor.apvts.getRawParameterValue (params::harmOn) > 0.5f ? 1 : 0;
+
+    if (on == masterState)
+        return;
+
+    masterState = on;
+    masterToggle.getButton().setButtonText (on ? "Harmony On" : "Harmony Off");
+
+    // Dimmed rather than disabled: the voices stay editable while the bus is
+    // off, so a part can be set up before it is switched in.
+    const float alpha = on ? 1.0f : 0.38f;
+
+    levelKnob.setAlpha (alpha);
+    spreadKnob.setAlpha (alpha);
+
+    for (auto* t : voiceEnable)
+        t->setAlpha (alpha);
+
+    for (auto* list : { &voiceInterval, &voiceLevel, &voicePan, &voiceFormant, &voiceDetune })
+        for (auto* k : *list)
+            k->setAlpha (alpha);
+
+    repaint();
 }
 
 void HarmonyPanel::pushFrames (const std::vector<PitchFrame>& frames)
@@ -87,6 +120,11 @@ void HarmonyPanel::resized()
         auto inner = row1.reduced (10);
         inner.removeFromTop (sectionHeader);
 
+        // The master switch leads the row: it is the one control that decides
+        // whether anything else on this page is heard at all.
+        masterToggle.setBounds (inner.removeFromLeft (140).withSizeKeepingCentre (140, 28));
+        inner.removeFromLeft (gap * 2);
+
         levelKnob.setBounds (inner.removeFromLeft (86));
         inner.removeFromLeft (gap);
         spreadKnob.setBounds (inner.removeFromLeft (86));
@@ -98,6 +136,7 @@ void HarmonyPanel::resized()
     area.removeFromTop (gap);
 
     // --- voices -----------------------------------------------------------
+    voicesArea = area;
     sections.push_back ({ area, "VOICES", colours::cyan });
 
     auto inner = area.reduced (10);
@@ -137,6 +176,15 @@ void HarmonyPanel::paintChordReadout (juce::Graphics& g, juce::Rectangle<int> ar
     g.setColour (colours::textFaint);
     g.setFont (FuturisticLookAndFeel::uiFont (9.0f, true));
     g.drawText ("LIVE CHORD", area.removeFromTop (12), juce::Justification::centredLeft, false);
+
+    if (! isMasterOn())
+    {
+        g.setColour (colours::textDim);
+        g.setFont (FuturisticLookAndFeel::uiFont (13.0f));
+        g.drawText ("Harmony is off - only the lead is heard", area,
+                    juce::Justification::centredLeft, true);
+        return;
+    }
 
     if (! liveVoiced || liveMidi <= 0.0f)
     {
@@ -200,6 +248,8 @@ void HarmonyPanel::paintChordReadout (juce::Graphics& g, juce::Rectangle<int> ar
 
 void HarmonyPanel::paint (juce::Graphics& g)
 {
+    const auto headerFont = FuturisticLookAndFeel::uiFont (10.0f, true);
+
     for (const auto& s : sections)
     {
         drawGlassPanel (g, s.bounds.toFloat(), s.accent, 7.0f);
@@ -207,15 +257,30 @@ void HarmonyPanel::paint (juce::Graphics& g)
         auto header = s.bounds.reduced (10, 0).withHeight (sectionHeader).translated (0, 8);
 
         g.setColour (s.accent.withAlpha (0.85f));
-        g.setFont (FuturisticLookAndFeel::uiFont (10.0f, true));
+        g.setFont (headerFont);
         g.drawText (s.title, header, juce::Justification::centredLeft, false);
 
-        const float textW = juce::GlyphArrangement::getStringWidth (
-                                FuturisticLookAndFeel::uiFont (10.0f, true), s.title) + 8.0f;
+        float lineEnd = (float) header.getRight();
+
+        // With the bus off, the voices header says so in words - dimmed
+        // controls alone read as "disabled", not as "switched off here".
+        if (s.bounds == voicesArea && ! isMasterOn())
+        {
+            const juce::String tag ("HARMONY OFF - NOT RENDERED");
+            const float tagW = juce::GlyphArrangement::getStringWidth (headerFont, tag);
+
+            g.setColour (colours::textDim);
+            g.drawText (tag, header, juce::Justification::centredRight, false);
+            lineEnd -= tagW + 10.0f;
+        }
+
+        const float textW = juce::GlyphArrangement::getStringWidth (headerFont, s.title) + 8.0f;
+        const float lineStart = (float) header.getX() + textW;
+
         g.setColour (s.accent.withAlpha (0.18f));
-        g.fillRect (juce::Rectangle<float> ((float) header.getX() + textW,
-                                            (float) header.getCentreY(),
-                                            (float) header.getWidth() - textW, 1.0f));
+        if (lineEnd > lineStart)
+            g.fillRect (juce::Rectangle<float> (lineStart, (float) header.getCentreY(),
+                                                lineEnd - lineStart, 1.0f));
     }
 
     // A tint down the left edge of each voice row ties the strip to its colour
@@ -223,7 +288,8 @@ void HarmonyPanel::paint (juce::Graphics& g)
     for (int v = 0; v < voiceRows.size(); ++v)
     {
         auto r = voiceRows.getReference (v).toFloat();
-        const bool on = *processor.apvts.getRawParameterValue (
+        const bool on = isMasterOn()
+                     && *processor.apvts.getRawParameterValue (
                             params::harmonyID (params::harmEnable, v)) > 0.5f;
 
         g.setColour (kVoiceColours[v].withAlpha (on ? 0.55f : 0.15f));
@@ -245,7 +311,8 @@ void HarmonyPanel::paint (juce::Graphics& g)
         if (r.getWidth() < 40)
             continue;
 
-        const bool on = *processor.apvts.getRawParameterValue (
+        const bool on = isMasterOn()
+                     && *processor.apvts.getRawParameterValue (
                             params::harmonyID (params::harmEnable, v)) > 0.5f;
 
         g.setColour (colours::textFaint);

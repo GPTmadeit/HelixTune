@@ -154,14 +154,37 @@ void FuturisticLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, i
         glowPath (g, value, accentColour, track, slider.isEnabled() ? 1.0f : 0.35f);
     }
 
-    // tick marks around the dial
-    const int ticks = 11;
+    // Tick marks around the dial. A stepped control gets one mark per step,
+    // drawn as a dot, so its detents are visible before it is touched; a
+    // continuous one gets an even scale of eleven.
+    const double interval = slider.getInterval();
+    const int steps = interval > 0.0
+                    ? (int) std::lround ((slider.getMaximum() - slider.getMinimum()) / interval) + 1
+                    : 0;
+    const bool stepped = steps >= 2 && steps <= 13;
+    const int ticks = stepped ? steps : 11;
+
     for (int i = 0; i < ticks; ++i)
     {
         const float t = (float) i / (float) (ticks - 1);
         const float a = startAngle + t * (endAngle - startAngle);
         const float inner = arcR + track * 0.75f;
         const float outer = inner + radius * 0.09f;
+
+        if (stepped)
+        {
+            const float ringR = (inner + outer) * 0.5f;
+            const bool current = std::abs (a - angle) < 0.01f;
+            const float dotR = current ? 2.6f : 1.7f;
+
+            g.setColour (current     ? accentColour.brighter (0.4f)
+                         : a < angle ? accentColour.withAlpha (0.6f)
+                                     : colours::textFaint.withAlpha (0.6f));
+            g.fillEllipse (juce::Rectangle<float> (dotR * 2.0f, dotR * 2.0f)
+                               .withCentre ({ centre.x + std::sin (a) * ringR,
+                                              centre.y - std::cos (a) * ringR }));
+            continue;
+        }
 
         const juce::Point<float> p1 (centre.x + std::sin (a) * inner, centre.y - std::cos (a) * inner);
         const juce::Point<float> p2 (centre.x + std::sin (a) * outer, centre.y - std::cos (a) * outer);

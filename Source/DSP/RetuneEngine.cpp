@@ -18,6 +18,9 @@ void RetuneEngine::reset() noexcept
     wasVoiced = false;
     haveCarrier = false;
     onsetFlag = false;
+
+    glideFrom = glideTo = glideElapsed = glideDuration = 0.0f;
+    gliding = haveGlide = false;
 }
 
 float RetuneEngine::alphaFor (float tauSeconds) const noexcept
@@ -26,6 +29,56 @@ float RetuneEngine::alphaFor (float tauSeconds) const noexcept
         return 1.0f;
 
     return 1.0f - std::exp (-hopSeconds / tauSeconds);
+}
+
+float RetuneEngine::currentGlide() const noexcept
+{
+    if (! gliding || glideDuration <= 0.0f)
+        return glideTo;
+
+    // Smoothstep rather than linear: it eases out of the old note and settles
+    // into the new one the way a sung portamento does, while still arriving in
+    // exactly the time asked for.
+    const float x = juce::jlimit (0.0f, 1.0f, glideElapsed / glideDuration);
+    return glideFrom + (glideTo - glideFrom) * (x * x * (3.0f - 2.0f * x));
+}
+
+float RetuneEngine::glideTowards (float target, float seconds) noexcept
+{
+    if (! haveGlide)
+    {
+        // The first note of a phrase starts on pitch - there is nothing to
+        // glide from.
+        glideFrom = glideTo = target;
+        gliding = false;
+        haveGlide = true;
+        return target;
+    }
+
+    // Only a change of note starts a transition. Smaller moves - a drawn curve
+    // in graph mode, a temperament's cent offset - are followed directly.
+    if (std::abs (target - glideTo) > 0.5f)
+    {
+        glideFrom     = currentGlide();   // from wherever we are, even mid-glide
+        glideTo       = target;
+        glideElapsed  = 0.0f;
+        glideDuration = seconds;
+        gliding       = seconds > 1.0e-4f;
+    }
+    else
+    {
+        glideTo = target;
+    }
+
+    if (gliding)
+    {
+        glideElapsed += hopSeconds;
+
+        if (glideElapsed >= glideDuration)
+            gliding = false;
+    }
+
+    return currentGlide();
 }
 
 RetuneEngine::Output RetuneEngine::process (float detectedMidi, bool voiced,
@@ -65,6 +118,10 @@ RetuneEngine::Output RetuneEngine::run (float detectedMidi, bool voiced, float t
         onsetFlag = false;
         noteAge = 0.0f;
 
+        // A transition joins two notes of one line. Across a breath there is
+        // no line, so the next phrase starts on its note.
+        haveGlide = gliding = false;
+
         out.outputMidi = detectedMidi;
         out.pitchRatio = 1.0f;
         return out;
@@ -94,6 +151,8 @@ RetuneEngine::Output RetuneEngine::run (float detectedMidi, bool voiced, float t
 
     if (! haveTarget)
     {
+        haveGlide = gliding = false;
+
         prevDetected = detectedMidi;
         wasVoiced = true;
         out.outputMidi = detectedMidi;
@@ -125,6 +184,13 @@ RetuneEngine::Output RetuneEngine::run (float detectedMidi, bool voiced, float t
     if (bypassNote)
         flexWeight = 0.0f;
 
+    // --- note transition --------------------------------------------------
+    // Separate from retune speed: retune decides how hard pitch is held on a
+    // note, transition decides how long the move *between* notes takes. With
+    // retune at zero the output follows this glide exactly - a tempo-locked
+    // step between notes rather than an instant jump.
+    const float aimed = glideTowards (targetMidi, p.transitionSeconds);
+
     // --- retune speed -----------------------------------------------------
     // Humanize stretches the time constant only once a note has been held, so
     // onsets stay tight while sustains are allowed to breathe. That asymmetry
@@ -146,7 +212,7 @@ RetuneEngine::Output RetuneEngine::run (float detectedMidi, bool voiced, float t
         alpha = juce::jlimit (0.0f, 1.0f, alpha * 1.6f);
     }
 
-    const float desired = -deviation * flexWeight;
+    const float desired = (aimed - basis) * flexWeight;
     smoothedCorr += (desired - smoothedCorr) * alpha;
 
     // --- assemble ---------------------------------------------------------

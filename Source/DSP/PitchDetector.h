@@ -11,6 +11,11 @@ namespace helix
 /** Voice/instrument range presets. These set the search bounds for the
     detector, which is the single biggest lever on octave-error rate: a soprano
     tracker that never looks below 200 Hz cannot halve-octave onto a rumble.
+
+    Generic gives that protection up in exchange for needing no setup: it
+    searches every range at once, and the Viterbi tracker's time context has to
+    do the octave work alone. It also inherits the lowest range's grain size,
+    and therefore the highest latency of any type.
 */
 enum class InputType
 {
@@ -18,10 +23,13 @@ enum class InputType
     altoTenor,       // ~G2 - G5
     lowMale,         // ~E2 - E4
     instrument,      // wide
-    bassInstrument   // ~E1 - E3
+    bassInstrument,  // ~E1 - E3
+    generic          // all of the above, for when the source is unknown
 };
 
-inline constexpr int numInputTypes = 5;
+// Appended rather than inserted: hosts persist the choice by index, so every
+// existing entry must keep its number or old sessions would change voice type.
+inline constexpr int numInputTypes = 6;
 
 struct FrequencyRange { float minHz, maxHz; };
 FrequencyRange rangeForInputType (InputType t);

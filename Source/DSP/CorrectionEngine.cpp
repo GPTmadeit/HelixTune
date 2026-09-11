@@ -86,6 +86,7 @@ void CorrectionEngine::reset() noexcept
     curVoiced = false;
     liveMidi = 0.0f;
     liveVoiced = false;
+    harmonyRunning = false;
     lastRms = 0.0f;
 }
 
@@ -239,8 +240,11 @@ void CorrectionEngine::runAnalysisHop (const Settings& s, double hopTime, double
 
     // --- assemble the shifter controls ------------------------------------
     // Only the corrective part is faded out across a consonant; transpose and
-    // detune are deliberate and stay applied throughout.
-    const float corrective = ro.correctionSemis - ro.offsetSemis + vo.pitchCents * 0.01f;
+    // detune are deliberate and stay applied throughout. Correction Amount
+    // scales the pull toward the note and nothing else - the vibrato generator
+    // is an effect rather than a correction, so it keeps its full depth.
+    const float corrective = (ro.correctionSemis - ro.offsetSemis) * s.correctionAmount
+                           + vo.pitchCents * 0.01f;
     const float totalSemis = corrective * correctionScale + ro.offsetSemis;
     curPitchRatio = std::pow (2.0f, totalSemis / 12.0f);
 
@@ -363,9 +367,20 @@ void CorrectionEngine::process (juce::AudioBuffer<float>& buffer,
         }
 
         if (s.harmony.anyEnabled)
+        {
+            // Voices stop consuming input while the bus is off, so after any
+            // spell switched off their mark tracking is stranded in the past.
+            // A clean start costs one fade-in; resuming stale state costs a
+            // burst of misplaced grains.
+            if (! harmonyRunning)
+                harmony.reset();
+
             harmony.process (mono.data() + pos,
                              harmonyL.data() + pos, harmonyR.data() + pos,
                              chunk, s.harmony);
+        }
+
+        harmonyRunning = s.harmony.anyEnabled;
 
         // Blend against the dry signal delayed by exactly our own latency, so
         // Mix is a true crossfade rather than a comb filter.

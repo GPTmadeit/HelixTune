@@ -27,7 +27,10 @@ juce::StringArray getScaleNames()
 
 juce::StringArray getInputTypeNames()
 {
-    return { "Soprano", "Alto / Tenor", "Low Male", "Instrument", "Bass Instrument" };
+    // Order must match InputType, and new entries go on the end - the host
+    // stores this parameter as an index.
+    return { "Soprano", "Alto / Tenor", "Low Male", "Instrument", "Bass Instrument",
+             "Generic (All Ranges)" };
 }
 
 juce::StringArray getVibratoShapeNames()
@@ -201,7 +204,44 @@ juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
             juce::AudioParameterFloatAttributes().withStringFromValueFunction (centsSuffix)));
     }
 
+    // Last in the layout so no existing parameter moves. Off by default: a
+    // pitch corrector dropped on a vocal should correct it, not add singers.
+    layout.add (std::make_unique<APB> (pid (harmOn), "Harmony", false));
+
+    // A choice rather than a float, so the knob clicks between note values
+    // instead of sweeping through the milliseconds between them.
+    layout.add (std::make_unique<APC> (pid (noteTransition), "Note Transition",
+                                       getTransitionNames(), 0));
+
+    layout.add (std::make_unique<APF> (pid (correctionAmount), "Correction Amount",
+                                       juce::NormalisableRange<float> (0.0f, 100.0f, 0.1f), 100.0f,
+                                       juce::AudioParameterFloatAttributes().withStringFromValueFunction (percentSuffix)));
+
     return layout;
+}
+
+juce::StringArray getTransitionNames()
+{
+    juce::StringArray names { "Off", "1/16T", "1/16", "1/8T", "1/8", "1/4T", "1/4" };
+    jassert (names.size() == kNumTransitionSteps);
+    return names;
+}
+
+bool legacyHarmonyWasOn (const juce::ValueTree& parameterState)
+{
+    for (int v = 0; v < numHarmonyVoices; ++v)
+    {
+        const auto child = parameterState.getChildWithProperty ("id", harmonyID (harmEnable, v));
+
+        // A voice missing from the state was at its default, and only the
+        // first voice defaults on.
+        const bool on = child.isValid() ? (float) child.getProperty ("value") > 0.5f
+                                        : v == 0;
+        if (on)
+            return true;
+    }
+
+    return false;
 }
 
 } // namespace helix::params

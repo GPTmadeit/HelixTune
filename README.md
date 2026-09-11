@@ -31,7 +31,7 @@ key.
 
 It is fast enough to sit on a track and accurate enough to trust: **corrected
 pitch lands within 0.1 cents of target**, and the whole chain costs about
-**4.5% of one CPU core**.
+**5% of one CPU core**.
 
 <table>
 <tr>
@@ -98,6 +98,17 @@ Then add that folder to your DAW's plugin search paths.
 | **Sibilance Guard** | How aggressively consonants are left uncorrected. |
 | **Throat Length** | Moves the vocal tract independently of pitch. |
 | **Transpose / Detune** | ±12 semitones, ±100 cents. |
+| **Note Transition** | How long the glide from one note to the next takes, in note values locked to the project tempo: 1/16T, 1/16, 1/8T, 1/8, 1/4T, 1/4. The knob clicks between those steps. Separate from Retune Speed, which decides how hard pitch is held *within* a note. |
+| **Correction Amount** | One knob, set apart beside the correction section, for how much correction is applied at all — 100% lands on the note, 50% goes halfway, 0% leaves the performance alone. Transpose and detune are unaffected. |
+
+### Input types
+
+**Soprano**, **Alto / Tenor**, **Low Male**, **Instrument** and **Bass
+Instrument** narrow the pitch search to that source's range, which is the best
+protection against octave errors. **Generic (All Ranges)** searches all of them
+at once — 32 Hz to 2.2 kHz — so it tracks any voice with no setup. The cost is
+the latency of the lowest range (see [Latency](#how-it-works)); if you know the
+singer, the specific type is still the tighter choice.
 
 ### Scales and tuning
 
@@ -113,9 +124,11 @@ Every pitch class can be **Normal**, **Removed** (never a target) or
 
 ### Auto-Key
 
-Listens to the performance and names the key. The pitch-class histogram is
-shown next to the answer, so when it picks the relative minor you can see why.
-One click applies it, or leave it in follow mode.
+Listens to the performance and names the key. The **Input Key** display sits on
+the main page beside the scale controls — the detected key in large type, a
+confidence bar, and the pitch-class histogram behind the answer, so when it
+picks the relative minor you can see why. One click applies it, or leave it in
+follow mode.
 
 ### Harmony
 
@@ -123,6 +136,11 @@ Four voices, each with its own formant scaling, pan, detune and timing offset.
 Intervals are **scale degrees**, not fixed intervals — a third above the tonic
 is four semitones and a third above the second degree is three. The panel shows
 the live target note per voice.
+
+A master **Harmony** switch turns the whole bus off: nothing is rendered, no CPU
+is spent, and the voices keep their settings for when it comes back on. It
+starts **off**, so a fresh instance only corrects. A lamp on the HARMONY tab
+shows whether it is running from any page.
 
 ### Graph mode
 
@@ -249,6 +267,7 @@ so the delay scales with the longest period in the selected range.
 | Low Male | ~47 ms |
 | Instrument | ~55 ms |
 | Bass Instrument | ~95 ms |
+| Generic (All Ranges) | ~95 ms — inherits the lowest range |
 
 Reported to the host for delay compensation. The harmony bus is delay-matched
 to the lead's formant stage, and Mix crossfades against a dry signal delayed by
@@ -263,17 +282,22 @@ exactly the total — a true crossfade, not a comb filter.
 Two independent layers, because they catch different things.
 
 **`HelixTuneDspTest`** — a console target over the same DSP sources that
-measures real numbers off real signals. **44 checks, all passing:**
+measures real numbers off real signals. **72 checks, all passing:**
 
 | Check | Result |
 |---|---|
-| f0 detection, 82–880 Hz | within **0.4 cents** |
+| f0 detection, 82–880 Hz | within **0.07 cents** |
+| f0 detection on **Generic**, 41 Hz – 1.98 kHz | within **1.5 cents** (0.2 cents up to 1.3 kHz) |
 | candidate lattice | true period present; subharmonic penalised 0.0014 → 0.35 |
 | octave stability, vibrato take | **0 errors** in 765 voiced frames |
-| PSOLA at ratios 0.75 – 2.0 | within **0.08 cents** |
+| PSOLA at ratios 0.75 – 2.0 | within **0.02 cents** |
 | PSOLA delay drift at ratio 1.0 | **0 samples** over 100 k |
-| 429.9 Hz (40 cents flat) → A440 | **0.09 cents** |
-| transpose +12 | **0.36 cents** |
+| 429.9 Hz (40 cents flat) → A440 | **0.02 cents** |
+| Generic: G2 / A3 / C6 sung 40 cents flat | **0.02 / 0.00 / 0.14 cents** |
+| transpose +12 | **0.03 cents** |
+| Correction Amount 50% on a −40 cent note | leaves **−19.99 cents**, as asked; transpose unaffected at 0% |
+| Note Transition 1/16 at 120 / 60 BPM | lands in **127.7 / 249.6 ms** against 125 / 250 (5.8 ms analysis hop); tracks its S-curve to 0.00 cents |
+| harmony master switch off, four voices set up | output **bit-identical** to no harmony |
 | diatonic intervals | exact — 3rd over tonic = 4 st, over 2nd = 3 st |
 | harmony render, A3 +3rd in C | **C4, 0.0 cents**; hard pan L 0.234 / R 0.000 |
 | Auto-Key | C major (0.90 confidence), A minor |
@@ -282,16 +306,21 @@ measures real numbers off real signals. **44 checks, all passing:**
 | white noise in | no NaN/Inf, output bounded |
 | silence in | silence out |
 
+**`HelixTunePresetTest`** drives the real processor rather than the DSP
+classes: every factory preset loads twice cleanly, a fresh instance starts with
+harmony off, and a session saved by 1.0.x reopens with harmony exactly as it
+sounded. **14 checks, all passing.**
+
 Throughput, stereo at 44.1 kHz, 512-sample blocks:
 
 | | real-time factor | one core |
 |---|---|---|
-| correction only | 22.4× | **4.5%** |
-| correction + 4 harmony voices | 14.3× | **7.0%** |
+| correction only | 19.2× | **5.2%** |
+| correction + 4 harmony voices | 13.7× | **7.3%** |
 
 **`pluginval`** — passes [pluginval](https://github.com/Tracktion/pluginval) at
 **strictness 10**, 25 test groups, zero failures: editor open/close while
-processing, state save/restore, parameter fuzzing across all 56 parameters,
+processing, state save/restore, parameter fuzzing across every parameter,
 bus-layout changes, and audio at 44.1/48/96 kHz across block sizes 64–1024.
 
 Builds clean under MSVC `/W4` with JUCE's recommended warning flags — zero

@@ -256,6 +256,8 @@ void HelixTuneEditor::timerCallback()
     if (graph != graphPanel.isVisible())
         updateMode();
 
+    harmonyPanel.refreshMasterState();
+
     repaint (headerBounds);
 }
 
@@ -273,7 +275,7 @@ void HelixTuneEditor::resized()
 
     autoModeButton.setBounds (bar.removeFromLeft (68));
     bar.removeFromLeft (4);
-    harmonyModeButton.setBounds (bar.removeFromLeft (84));
+    harmonyModeButton.setBounds (bar.removeFromLeft (100));   // room for the status lamp
     bar.removeFromLeft (4);
     graphModeButton.setBounds (bar.removeFromLeft (68));
 
@@ -364,6 +366,29 @@ void HelixTuneEditor::paint (juce::Graphics& g)
     g.setFont (FuturisticLookAndFeel::monoFont (9.0f));
     g.drawText ("LATENCY " + juce::String (ms, 1) + " ms",
                 latencyBounds, juce::Justification::centredLeft, false);
+}
+
+void HelixTuneEditor::paintOverChildren (juce::Graphics& g)
+{
+    // A status lamp on the HARMONY tab, so whether extra voices are being
+    // added is visible from every view, not only from the harmony page.
+    const bool on = *processor.apvts.getRawParameterValue (params::harmOn) > 0.5f;
+    const auto b = harmonyModeButton.getBounds().toFloat();
+    const auto lamp = juce::Rectangle<float> (6.0f, 6.0f)
+                          .withCentre ({ b.getRight() - 8.0f, b.getCentreY() });
+
+    if (on)
+    {
+        g.setColour (colours::violet.withAlpha (0.35f));
+        g.fillEllipse (lamp.expanded (2.5f));
+        g.setColour (colours::violet.brighter (0.5f));
+        g.fillEllipse (lamp);
+    }
+    else
+    {
+        g.setColour (colours::textFaint.withAlpha (0.7f));
+        g.drawEllipse (lamp.reduced (0.5f), 1.0f);
+    }
 }
 
 } // namespace helix

@@ -7,10 +7,11 @@ static constexpr int sectionHeader = 20;
 static constexpr int gap = 8;
 
 AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
-    : processor (p), scope (p), keyboard (p)
+    : processor (p), scope (p), keyboard (p), inputKey (p)
 {
     addAndMakeVisible (scope);
     addAndMakeVisible (keyboard);
+    addAndMakeVisible (inputKey);
 
     auto& state = processor.apvts;
 
@@ -19,12 +20,14 @@ AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
     inputSelector.attach (state, params::inputType);
     shapeSelector.attach (state, params::vibShape);
 
-    retuneKnob   .attach (state, params::retuneSpeed);
-    flexKnob     .attach (state, params::flexTune);
-    humanizeKnob .attach (state, params::humanize);
-    natVibKnob   .attach (state, params::naturalVibrato);
-    transposeKnob.attach (state, params::transpose);
-    detuneKnob   .attach (state, params::detune);
+    amountKnob    .attach (state, params::correctionAmount);
+    retuneKnob    .attach (state, params::retuneSpeed);
+    transitionKnob.attach (state, params::noteTransition);
+    flexKnob      .attach (state, params::flexTune);
+    humanizeKnob  .attach (state, params::humanize);
+    natVibKnob    .attach (state, params::naturalVibrato);
+    transposeKnob .attach (state, params::transpose);
+    detuneKnob    .attach (state, params::detune);
 
     trackingKnob .attach (state, params::tracking);
     stabilityKnob.attach (state, params::pitchSmooth);
@@ -46,7 +49,8 @@ AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
 
     for (auto* c : std::initializer_list<juce::Component*> {
              &keySelector, &scaleSelector, &inputSelector, &shapeSelector,
-             &retuneKnob, &flexKnob, &humanizeKnob, &natVibKnob, &transposeKnob, &detuneKnob,
+             &amountKnob, &retuneKnob, &transitionKnob, &flexKnob, &humanizeKnob,
+             &natVibKnob, &transposeKnob, &detuneKnob,
              &trackingKnob, &stabilityKnob, &sibilanceKnob, &throatKnob,
              &vibRateKnob, &vibVarKnob, &vibDelayKnob, &vibOnsetKnob,
              &vibPitchKnob, &vibAmpKnob, &vibFormantKnob,
@@ -62,12 +66,40 @@ AutoModePanel::AutoModePanel (HelixTuneProcessor& p)
     keyboard.onStateChanged = [this] { repaint(); };
 }
 
+juce::String AutoModePanel::tempoTag() const
+{
+    const bool known = processor.hasHostTempo();
+    const double bpm = processor.getHostBpm();
+
+    const auto tempo = known ? juce::String (bpm, 1) + " BPM"
+                             : juce::String ("120 BPM (no host tempo)");
+
+    const int step = (int) *processor.apvts.getRawParameterValue (params::noteTransition);
+
+    if (step <= 0)
+        return "TEMPO " + tempo;
+
+    const auto names = params::getTransitionNames();
+    const float ms = transitionSecondsFor (step, known ? bpm : 120.0) * 1000.0f;
+
+    return names[step] + " @ " + tempo + " = " + juce::String (ms, 0) + " ms";
+}
+
 void AutoModePanel::pushFrames (const std::vector<PitchFrame>& frames)
 {
     scope.pushFrames (frames);
 
     if (! frames.empty())
         keyboard.setLiveNote (frames.back().detectedMidi, frames.back().voiced);
+
+    // The tempo can change under us (a tempo map, a new session), so the
+    // readout follows it rather than being painted once.
+    const auto tag = tempoTag();
+    if (tag != shownTempoTag)
+    {
+        shownTempoTag = tag;
+        repaint (tempoBounds);
+    }
 }
 
 void AutoModePanel::resized()
@@ -75,12 +107,18 @@ void AutoModePanel::resized()
     sections.clear();
     auto area = getLocalBounds().reduced (gap);
 
-    // --- row 1: scale + scope --------------------------------------------
+    // --- row 1: scale, detected key, scope --------------------------------
     auto row1 = area.removeFromTop (208);
     auto scaleArea = row1.removeFromLeft (410);
     row1.removeFromLeft (gap);
 
+    // The detected key sits beside the scale it feeds, so what the singer is
+    // actually in reads at a glance rather than from another page.
+    auto keyArea = row1.removeFromLeft (juce::jlimit (220, 280, row1.getWidth() / 3));
+    row1.removeFromLeft (gap);
+
     sections.push_back ({ scaleArea, "KEY & SCALE", colours::cyan });
+    sections.push_back ({ keyArea, "INPUT KEY", colours::violet });
     sections.push_back ({ row1, "PITCH", colours::cyan });
 
     {
@@ -96,13 +134,30 @@ void AutoModePanel::resized()
         keyboard.setBounds (inner);
     }
 
+    inputKey.setBounds (keyArea);
     scope.setBounds (row1.reduced (2));
 
     area.removeFromTop (gap);
 
-    // --- row 2: correction ------------------------------------------------
+    // --- row 2: amount + correction ---------------------------------------
     auto row2 = area.removeFromTop (168);
+
+    // Amount stands on its own: it scales everything the other correction
+    // controls decide, so it should not read as one more of them.
+    auto amountArea = row2.removeFromLeft (128);
+    row2.removeFromLeft (gap);
+
+    correctionArea = row2;
+    tempoBounds = row2.reduced (10, 0).withHeight (sectionHeader).translated (0, 8);
+
+    sections.push_back ({ amountArea, "AMOUNT", colours::magenta });
     sections.push_back ({ row2, "CORRECTION", colours::magenta });
+
+    {
+        auto inner = amountArea.reduced (10);
+        inner.removeFromTop (sectionHeader);
+        amountKnob.setBounds (inner);
+    }
 
     {
         auto inner = row2.reduced (10);
@@ -115,7 +170,7 @@ void AutoModePanel::resized()
 
         inner.removeFromBottom (4);
 
-        NeonKnob* knobs[] = { &retuneKnob, &flexKnob, &humanizeKnob,
+        NeonKnob* knobs[] = { &retuneKnob, &transitionKnob, &flexKnob, &humanizeKnob,
                               &natVibKnob, &transposeKnob, &detuneKnob };
         const int n = (int) (sizeof (knobs) / sizeof (knobs[0]));
         const int w = inner.getWidth() / n;
@@ -142,7 +197,7 @@ void AutoModePanel::resized()
         inner.removeFromTop (sectionHeader);
 
         auto top = inner.removeFromTop (42);
-        inputSelector.setBounds (top.removeFromLeft (168));
+        inputSelector.setBounds (top.removeFromLeft (176));
         top.removeFromLeft (gap);
         midiOutToggle.setBounds (top.withSizeKeepingCentre (top.getWidth(), 24));
 
@@ -183,6 +238,8 @@ void AutoModePanel::resized()
 
 void AutoModePanel::paint (juce::Graphics& g)
 {
+    const auto headerFont = FuturisticLookAndFeel::uiFont (10.0f, true);
+
     for (const auto& s : sections)
     {
         drawGlassPanel (g, s.bounds.toFloat(), s.accent, 7.0f);
@@ -190,17 +247,32 @@ void AutoModePanel::paint (juce::Graphics& g)
         auto header = s.bounds.reduced (10, 0).withHeight (sectionHeader).translated (0, 8);
 
         g.setColour (s.accent.withAlpha (0.85f));
-        g.setFont (FuturisticLookAndFeel::uiFont (10.0f, true));
+        g.setFont (headerFont);
         g.drawText (s.title, header, juce::Justification::centredLeft, false);
+
+        float lineEnd = (float) header.getRight();
+
+        if (s.bounds == correctionArea)
+        {
+            const auto tag = tempoTag();
+            const auto tagFont = FuturisticLookAndFeel::monoFont (10.0f, true);
+
+            g.setColour (colours::textDim);
+            g.setFont (tagFont);
+            g.drawText (tag, header, juce::Justification::centredRight, false);
+
+            lineEnd -= juce::GlyphArrangement::getStringWidth (tagFont, tag) + 10.0f;
+        }
 
         // Hairline running from the title to the panel edge - a cheap way to
         // make a group read as one object without boxing it in.
-        const float textW = juce::GlyphArrangement::getStringWidth (
-                                FuturisticLookAndFeel::uiFont (10.0f, true), s.title) + 8.0f;
+        const float textW = juce::GlyphArrangement::getStringWidth (headerFont, s.title) + 8.0f;
+        const float lineStart = (float) header.getX() + textW;
+
         g.setColour (s.accent.withAlpha (0.18f));
-        g.fillRect (juce::Rectangle<float> ((float) header.getX() + textW,
-                                            (float) header.getCentreY(),
-                                            (float) header.getWidth() - textW, 1.0f));
+        if (lineEnd > lineStart)
+            g.fillRect (juce::Rectangle<float> (lineStart, (float) header.getCentreY(),
+                                                lineEnd - lineStart, 1.0f));
     }
 }
 

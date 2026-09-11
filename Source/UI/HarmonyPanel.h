@@ -22,6 +22,11 @@ public:
 
     void pushFrames (const std::vector<PitchFrame>& frames);
 
+    /** Polled from the editor's timer. The master switch can be moved by host
+        automation as well as by its button, so the panel follows the
+        parameter rather than the click. */
+    void refreshMasterState();
+
     void paint (juce::Graphics&) override;
     void resized() override;
 
@@ -38,6 +43,7 @@ private:
     HelixTuneProcessor& processor;
     AutoKeyDisplay autoKey;
 
+    NeonToggle masterToggle { "Harmony Off", colours::violet };
     NeonKnob levelKnob  { "Level",  colours::violet };
     NeonKnob spreadKnob { "Spread", colours::violet };
 
@@ -45,11 +51,15 @@ private:
     juce::OwnedArray<NeonKnob>   voiceInterval, voiceLevel, voicePan, voiceFormant, voiceDetune;
 
     std::vector<Section> sections;
-    juce::Rectangle<int> chordBounds;
+    juce::Rectangle<int> chordBounds, voicesArea;
     juce::Array<juce::Rectangle<int>> voiceRows, voiceReadouts;
 
     float liveMidi = 0.0f;
     bool  liveVoiced = false;
+
+    // -1 until the first refresh, so the initial state is always applied.
+    int  masterState = -1;
+    bool isMasterOn() const noexcept { return masterState == 1; }
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HarmonyPanel)
 };

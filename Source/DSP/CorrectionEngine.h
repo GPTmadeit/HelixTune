@@ -43,6 +43,7 @@ public:
         uint32_t noteStateBits = 0;      // 2 bits per pitch class, see NoteState
 
         RetuneEngine::Params     retune;
+        float                    correctionAmount = 1.0f;   // 0..1 of the correction applied
         VibratoGenerator::Params vibrato;
         HarmonyEngine::Params    harmony;
 
@@ -117,6 +118,10 @@ private:
     bool  curVoiced       = false;
     float liveMidi        = 0.0f;
     bool  liveVoiced      = false;
+
+    // Whether the harmony bus ran last chunk. A switched-off bus stops
+    // consuming input, so it has to start clean when it comes back.
+    bool  harmonyRunning  = false;
 
     int      lastInputType   = -1;
     uint32_t lastNoteStates  = 0xFFFFFFFF;

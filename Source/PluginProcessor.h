@@ -56,6 +56,11 @@ public:
     bool   isTransportPlaying() const noexcept { return transportPlaying.load (std::memory_order_relaxed); }
     double getCurrentSampleRate() const noexcept { return currentSampleRate; }
 
+    /** The tempo Note Transition is locked to. When the host reports none,
+        this is the 120 BPM fallback and hasHostTempo() is false. */
+    double getHostBpm() const noexcept   { return hostBpm.load (std::memory_order_relaxed); }
+    bool   hasHostTempo() const noexcept { return hostTempoKnown.load (std::memory_order_relaxed); }
+
     /** Auto-Key readouts for the editor. */
     KeyDetector::Result getKeyEstimate() const noexcept { return engine.getKeyEstimate(); }
     float getChroma (int pitchClass) const noexcept { return engine.getChroma (pitchClass); }
@@ -64,7 +69,7 @@ public:
     juce::ValueTree editorState { "EDITOR" };
 
 private:
-    CorrectionEngine::Settings buildSettings() const noexcept;
+    CorrectionEngine::Settings buildSettings (double bpm) const noexcept;
     void updateMidiTargets (const juce::MidiBuffer& midi) noexcept;
     void emitPitchMidi (juce::MidiBuffer& midi, int numSamples) noexcept;
     void handleAsyncUpdate() override;
@@ -76,6 +81,8 @@ private:
     std::atomic<uint32_t> noteStateBits { 0 };
     std::atomic<double>   playheadSeconds { 0.0 };
     std::atomic<bool>     transportPlaying { false };
+    std::atomic<double>   hostBpm { 120.0 };
+    std::atomic<bool>     hostTempoKnown { false };
 
     double currentSampleRate = 44100.0;
     double freeRunningTime = 0.0;
@@ -127,6 +134,9 @@ private:
         std::atomic<float>* sibilance = nullptr;
         std::atomic<float>* autoKey = nullptr;
         std::atomic<float>* midiOut = nullptr;
+        std::atomic<float>* noteTransition = nullptr;
+        std::atomic<float>* correctionAmount = nullptr;
+        std::atomic<float>* harmOn = nullptr;
         std::atomic<float>* harmLevel = nullptr;
         std::atomic<float>* harmSpread = nullptr;
 

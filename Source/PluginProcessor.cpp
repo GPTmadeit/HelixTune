@@ -49,6 +49,9 @@ void HelixTuneProcessor::buildCache()
     cache.sibilance        = get (params::sibilance);
     cache.autoKey          = get (params::autoKey);
     cache.midiOut          = get (params::midiOut);
+    cache.noteTransition   = get (params::noteTransition);
+    cache.correctionAmount = get (params::correctionAmount);
+    cache.harmOn           = get (params::harmOn);
     cache.harmLevel        = get (params::harmLevel);
     cache.harmSpread       = get (params::harmSpread);
 
@@ -109,7 +112,7 @@ void HelixTuneProcessor::clearNoteStates() noexcept
     noteStateBits.store (0, std::memory_order_relaxed);
 }
 
-CorrectionEngine::Settings HelixTuneProcessor::buildSettings() const noexcept
+CorrectionEngine::Settings HelixTuneProcessor::buildSettings (double bpm) const noexcept
 {
     CorrectionEngine::Settings s;
 
@@ -128,6 +131,9 @@ CorrectionEngine::Settings HelixTuneProcessor::buildSettings() const noexcept
     s.retune.transposeSemis       = cache.transpose->load();
     s.retune.detuneCents          = cache.detune->load();
     s.retune.classicMode          = cache.classicMode->load() > 0.5f;
+    s.retune.transitionSeconds    = transitionSecondsFor ((int) cache.noteTransition->load(), bpm);
+
+    s.correctionAmount = juce::jlimit (0.0f, 1.0f, cache.correctionAmount->load() * 0.01f);
 
     s.formantCorrection = cache.formantCorrect->load() > 0.5f;
     s.throatLength      = cache.throatLength->load();
@@ -174,6 +180,10 @@ CorrectionEngine::Settings HelixTuneProcessor::buildSettings() const noexcept
 
         s.harmony.anyEnabled = s.harmony.anyEnabled || out.enabled;
     }
+
+    // The master switch gates the whole bus rather than clearing each voice,
+    // so voice settings survive being switched off and return as they were.
+    s.harmony.anyEnabled = s.harmony.anyEnabled && cache.harmOn->load() > 0.5f;
 
     return s;
 }
@@ -229,6 +239,7 @@ void HelixTuneProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     // --- transport --------------------------------------------------------
     double timeSeconds = freeRunningTime;
     double ppq = -1.0;
+    double bpm = 0.0;
     bool playing = false;
 
     if (auto* ph = getPlayHead())
@@ -241,14 +252,19 @@ void HelixTuneProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             if (const auto p = pos->getPpqPosition())
                 ppq = *p;
 
+            if (const auto b = pos->getBpm())
+                bpm = *b;
+
             playing = pos->getIsPlaying();
         }
     }
 
     playheadSeconds.store (timeSeconds, std::memory_order_relaxed);
     transportPlaying.store (playing, std::memory_order_relaxed);
+    hostTempoKnown.store (bpm > 1.0, std::memory_order_relaxed);
+    hostBpm.store (bpm > 1.0 ? bpm : 120.0, std::memory_order_relaxed);
 
-    const auto settings = buildSettings();
+    const auto settings = buildSettings (bpm);
     const bool settings_autoKey = cache.autoKey->load() > 0.5f;
 
     const bool haveMidiTarget = settings.midiTarget && lastHeldNote >= 0;
@@ -370,8 +386,20 @@ void HelixTuneProcessor::setStateInformation (const void* data, int sizeInBytes)
 
     noteStateBits.store ((uint32_t) (int) root.getProperty ("noteStates", 0));
 
-    if (const auto state = root.getChildWithName (apvts.state.getType()); state.isValid())
+    if (auto state = root.getChildWithName (apvts.state.getType()).createCopy(); state.isValid())
+    {
+        // Sessions from before the master Harmony switch carry no value for
+        // it. Filling one in before the state is applied, rather than setting
+        // the parameter afterwards, keeps the migration out of the host's undo
+        // and automation history.
+        if (! state.getChildWithProperty ("id", params::harmOn).isValid())
+            state.appendChild (juce::ValueTree ("PARAM", {
+                                   { "id", params::harmOn },
+                                   { "value", params::legacyHarmonyWasOn (state) ? 1.0 : 0.0 } }),
+                               nullptr);
+
         apvts.replaceState (state);
+    }
 
     if (const auto g = root.getChildWithName ("GRAPH"); g.isValid())
         graph.fromValueTree (g);

@@ -4,6 +4,7 @@
 #include "Widgets/NeonKnob.h"
 #include "Widgets/ScaleKeyboard.h"
 #include "Widgets/PitchScope.h"
+#include "Widgets/AutoKeyDisplay.h"
 #include "../PluginProcessor.h"
 
 namespace helix::ui
@@ -30,22 +31,29 @@ private:
         juce::Colour accent;
     };
 
+    /** Readout for the correction header: the tempo Note Transition is locked
+        to, and what the selected note value works out to at that tempo. */
+    juce::String tempoTag() const;
+
     HelixTuneProcessor& processor;
 
-    PitchScope    scope;
-    ScaleKeyboard keyboard;
+    PitchScope     scope;
+    ScaleKeyboard  keyboard;
+    AutoKeyDisplay inputKey;
 
     NeonSelector keySelector    { "Key",   colours::cyan };
     NeonSelector scaleSelector  { "Scale", colours::cyan };
     NeonSelector inputSelector  { "Source", colours::violet };
     NeonSelector shapeSelector  { "Shape", colours::amber };
 
-    NeonKnob retuneKnob    { "Retune",   colours::magenta };
-    NeonKnob flexKnob      { "Flex-Tune", colours::magenta };
-    NeonKnob humanizeKnob  { "Humanize", colours::magenta };
-    NeonKnob natVibKnob    { "Nat Vib",  colours::magenta };
-    NeonKnob transposeKnob { "Transpose", colours::magenta };
-    NeonKnob detuneKnob    { "Detune",   colours::magenta };
+    NeonKnob amountKnob     { "Amount",     colours::magenta };
+    NeonKnob retuneKnob     { "Retune",     colours::magenta };
+    NeonKnob transitionKnob { "Transition", colours::magenta };
+    NeonKnob flexKnob       { "Flex-Tune",  colours::magenta };
+    NeonKnob humanizeKnob   { "Humanize",   colours::magenta };
+    NeonKnob natVibKnob     { "Nat Vib",    colours::magenta };
+    NeonKnob transposeKnob  { "Transpose",  colours::magenta };
+    NeonKnob detuneKnob     { "Detune",     colours::magenta };
 
     NeonKnob trackingKnob  { "Tracking", colours::violet };
     NeonKnob stabilityKnob { "Stability", colours::violet };
@@ -66,6 +74,8 @@ private:
     NeonToggle midiOutToggle   { "MIDI Out", colours::violet };
 
     std::vector<Section> sections;
+    juce::Rectangle<int> correctionArea, tempoBounds;
+    juce::String shownTempoTag;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AutoModePanel)
 };

@@ -47,9 +47,19 @@ inline constexpr const char* sibilance       = "sibilance";
 inline constexpr const char* autoKey         = "autoKey";
 inline constexpr const char* midiOut         = "midiOut";
 
+// --- tempo-locked transition and overall amount ------------------------------
+inline constexpr const char* noteTransition   = "noteTransition";
+inline constexpr const char* correctionAmount = "correctionAmount";
+
+/** Note values for Note Transition, index-matched to kTransitionBeats. */
+juce::StringArray getTransitionNames();
+
 // --- harmony ---------------------------------------------------------------
 inline constexpr int numHarmonyVoices = 4;
 
+/** Master switch. Off means the harmony engine does not run at all - nothing
+    rendered, no CPU spent - whatever the per-voice switches say. */
+inline constexpr const char* harmOn     = "harmOn";
 inline constexpr const char* harmLevel  = "harmLevel";
 inline constexpr const char* harmSpread = "harmSpread";
 
@@ -74,5 +84,11 @@ juce::StringArray getKeyNames();
 juce::StringArray getScaleNames();
 juce::StringArray getInputTypeNames();
 juce::StringArray getVibratoShapeNames();
+
+/** Whether a parameter state saved before the master Harmony switch existed
+    would have played harmony. Those versions sounded whenever any voice was
+    on, so that is what the switch is migrated to - otherwise an old session
+    would silently lose its harmonies when reopened. */
+bool legacyHarmonyWasOn (const juce::ValueTree& parameterState);
 
 } // namespace helix::params

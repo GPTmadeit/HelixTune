@@ -14,6 +14,25 @@ FrequencyRange rangeForInputType (InputType t)
         case InputType::lowMale:        return {   65.0f,  600.0f };
         case InputType::instrument:     return {   55.0f, 2200.0f };
         case InputType::bassInstrument: return {   32.0f,  400.0f };
+
+        case InputType::generic:
+        {
+            // Derived rather than written out, so retuning any other range can
+            // never leave Generic narrower than a type it claims to cover.
+            FrequencyRange all { 1.0e6f, 0.0f };
+
+            for (int i = 0; i < numInputTypes; ++i)
+            {
+                if ((InputType) i == InputType::generic)
+                    continue;
+
+                const auto r = rangeForInputType ((InputType) i);
+                all.minHz = std::min (all.minHz, r.minHz);
+                all.maxHz = std::max (all.maxHz, r.maxHz);
+            }
+
+            return all;
+        }
     }
     return { 65.0f, 900.0f };
 }
@@ -185,12 +204,17 @@ float PitchDetector::parabolicRefine (const Config& c, int tau) const noexcept
 {
     // Sub-sample period accuracy. Without this the quantisation floor at
     // 44.1 kHz is ~13 cents at A4 and ~50 cents at A5 - audibly wrong.
+    //
+    // The fit runs on the raw difference function rather than the normalised
+    // one the minimum was picked from. Normalising multiplies by tau over a
+    // running sum, which tilts the curve and drags the parabola's vertex - and
+    // at short periods one sample is a large fraction of the period.
     if (tau <= c.tauMin || tau >= c.tauMax)
         return (float) tau;
 
-    const float a = cmnd[(size_t) (tau - 1)];
-    const float b = cmnd[(size_t) tau];
-    const float d = cmnd[(size_t) (tau + 1)];
+    const float a = diff[(size_t) (tau - 1)];
+    const float b = diff[(size_t) tau];
+    const float d = diff[(size_t) (tau + 1)];
 
     const float denom = a - 2.0f * b + d;
     if (std::abs (denom) < 1.0e-12f)

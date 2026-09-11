@@ -68,19 +68,24 @@ void AutoKeyDisplay::paint (juce::Graphics& g)
     r.removeFromBottom (30);
 
     // --- the answer -------------------------------------------------------
-    auto headline = r.removeFromTop (34);
+    // A narrow slot stacks the confidence bar under a larger key name. That is
+    // the layout on the main page, where the key has to read from across the
+    // room; a wide slot keeps the two side by side.
+    const bool stacked = r.getWidth() < 300;
+    auto headline = r.removeFromTop (stacked ? 42 : 34);
 
     if (last.valid)
     {
         g.setColour (colours::text);
-        g.setFont (FuturisticLookAndFeel::uiFont (24.0f, true));
+        g.setFont (FuturisticLookAndFeel::uiFont (stacked ? 32.0f : 24.0f, true));
         g.drawText (juce::String (kNoteNames[last.rootPitchClass])
                         + (last.minor ? " min" : " maj"),
-                    headline.removeFromLeft (110), juce::Justification::centredLeft, false);
+                    stacked ? headline : headline.removeFromLeft (110),
+                    juce::Justification::centredLeft, false);
 
         // Confidence as a short bar rather than a number: the exact value is
         // meaningless, the "is this trustworthy yet" reading is not.
-        auto meter = headline.reduced (4, 12);
+        auto meter = stacked ? r.removeFromTop (10).reduced (0, 2) : headline.reduced (4, 12);
         g.setColour (colours::bgSunken);
         g.fillRoundedRectangle (meter.toFloat(), 2.0f);
 
@@ -92,9 +97,19 @@ void AutoKeyDisplay::paint (juce::Graphics& g)
     }
     else
     {
-        g.setColour (colours::textFaint);
-        g.setFont (FuturisticLookAndFeel::uiFont (13.0f));
-        g.drawText ("LISTENING...", headline, juce::Justification::centredLeft, false);
+        g.setColour (stacked ? colours::textDim : colours::textFaint);
+        g.setFont (FuturisticLookAndFeel::uiFont (stacked ? 20.0f : 13.0f, stacked));
+        g.drawText (stacked ? "Listening..." : "LISTENING...", headline,
+                    juce::Justification::centredLeft, false);
+
+        // Hold the meter's place, so the histogram does not jump when the
+        // first estimate arrives.
+        if (stacked)
+        {
+            const auto meter = r.removeFromTop (10).reduced (0, 2);
+            g.setColour (colours::bgSunken);
+            g.fillRoundedRectangle (meter.toFloat(), 2.0f);
+        }
     }
 
     r.removeFromTop (6);

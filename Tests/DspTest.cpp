@@ -1344,6 +1344,350 @@ static void reportPerformance()
     measure ("correction + 4 harmony", true);
 }
 
+/** Generic has to cover every voice without being told which one it is. */
+static void testGenericInputType()
+{
+    std::printf ("\nGeneric input type (all ranges)\n");
+
+    const auto all = rangeForInputType (InputType::generic);
+    bool covers = true;
+
+    for (int i = 0; i < numInputTypes; ++i)
+    {
+        const auto r = rangeForInputType ((InputType) i);
+        covers = covers && all.minHz <= r.minHz && all.maxHz >= r.maxHz;
+    }
+
+    check (covers, "Generic spans every other input type's range",
+           juce::String (all.minHz, 0) + " - " + juce::String (all.maxHz, 0) + " Hz");
+
+    // From the floor of a bass voice to the top of a soprano's, one setting.
+    const double sr = 44100.0;
+    const double freqs[] = { 41.20, 65.41, 98.00, 196.00, 392.00, 783.99, 1318.51, 1975.53 };
+
+    float worst = 0.0f;
+    juce::String worstAt;
+
+    for (double f : freqs)
+    {
+        juce::AudioBuffer<float> buf (1, 44100);
+        fillTone (buf, sr, f);
+
+        PitchDetector det;
+        det.prepare (sr);
+        det.setInputType (InputType::generic);
+        det.setTracking (0.5f);
+
+        const int frame = det.getFrameSize();
+        double acc = 0.0;
+        int count = 0;
+
+        for (int pos = 0; pos + frame <= buf.getNumSamples(); pos += 512)
+        {
+            const auto r = det.process (buf.getReadPointer (0) + pos);
+            if (r.voiced)
+            {
+                acc += r.frequencyHz;
+                ++count;
+            }
+        }
+
+        const float measured = count > 0 ? (float) (acc / count) : 0.0f;
+        const float err = measured > 0.0f ? std::abs (centsBetween (measured, (float) f)) : 1200.0f;
+
+        std::printf ("         %8.2f Hz -> %8.2f Hz  (%.2f cents, %d voiced frames)\n",
+                     f, measured, err, count);
+
+        if (err > worst)
+        {
+            worst = err;
+            worstAt = juce::String (f, 2) + " Hz";
+        }
+    }
+
+    check (worst < 2.0f, "Generic detects 41 Hz to 1.98 kHz without being told the range",
+           "worst " + juce::String (worst, 2) + " cents at " + worstAt);
+
+    // Detection alone is not the point - the whole chain has to correct a low
+    // voice and a high one on the same setting.
+    CorrectionEngine::Settings s;
+    s.inputType = InputType::generic;
+    s.tracking = 0.5f;
+    s.key = 0;
+    s.scaleIndex = 0;              // chromatic
+    s.retune.retuneMs = 0.0f;
+    s.mix = 1.0f;
+    s.outputGain = 1.0f;
+
+    struct Case { const char* name; double targetHz; };
+    const Case cases[] = { { "G2", 98.00 }, { "A3", 220.00 }, { "C6", 1046.50 } };
+
+    for (const auto& c : cases)
+    {
+        const double flat = c.targetHz * std::pow (2.0, -40.0 / 1200.0);
+        float outHz = 0.0f, peak = 0.0f;
+        runChain (sr, flat, s, outHz, peak);
+
+        const float err = std::abs (centsBetween (outHz, (float) c.targetHz));
+        check (err < 2.0f, juce::String ("Generic corrects ") + c.name + " sung 40 cents flat",
+               juce::String (outHz, 2) + " Hz, " + juce::String (err, 2) + " cents from target");
+    }
+
+    // The cost, reported rather than asserted: Generic inherits the grain size
+    // of the lowest range it covers.
+    auto latencyFor = [&] (InputType t)
+    {
+        CorrectionEngine engine;
+        engine.prepare (sr, 512, 1);
+
+        PitchFifo fifo;
+        CorrectionEngine::Settings ls;
+        ls.inputType = t;
+
+        juce::AudioBuffer<float> block (1, 512);
+        block.clear();
+        engine.process (block, ls, 0.0, -1.0, nullptr, 0.0f, false, fifo);
+
+        return 1000.0 * engine.getLatencySamples() / sr;
+    };
+
+    std::printf ("         latency: Alto/Tenor %.1f ms, Generic %.1f ms\n",
+                 latencyFor (InputType::altoTenor), latencyFor (InputType::generic));
+}
+
+/** The master switch has to mean *off*: with the bus disabled the output must
+    be bit-identical to a chain that never had a harmony voice, and switching it
+    back on must come in cleanly rather than with a burst of stale grains. */
+static void testHarmonyMasterSwitch()
+{
+    std::printf ("\nHarmony master switch\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+    const int switchAt = ((int) (sr * 1.5) / blockSize) * blockSize;
+
+    juce::AudioBuffer<float> source (1, total);
+    fillTone (source, sr, 220.0);
+
+    CorrectionEngine::Settings base;
+    base.inputType = InputType::altoTenor;
+    base.retune.retuneMs = 20.0f;
+    base.mix = 1.0f;
+    base.outputGain = 1.0f;
+    base.harmony.level = 0.8f;
+
+    for (int v = 0; v < HarmonyEngine::maxVoices; ++v)
+    {
+        auto& vp = base.harmony.voices[(size_t) v];
+        vp.enabled = true;
+        vp.degrees = 2 + 2 * v;
+        vp.level = 0.7f;
+    }
+
+    // anyEnabled is exactly what the processor derives from the master switch.
+    auto render = [&] (bool voicesSetUp, bool switchOnHalfway)
+    {
+        CorrectionEngine engine;
+        engine.prepare (sr, blockSize, 1);
+        PitchFifo fifo;
+
+        auto s = base;
+        if (! voicesSetUp)
+            for (auto& vp : s.harmony.voices)
+                vp.enabled = false;
+
+        std::vector<float> out ((size_t) total, 0.0f);
+        juce::AudioBuffer<float> block (1, blockSize);
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            s.harmony.anyEnabled = voicesSetUp && switchOnHalfway && pos >= switchAt;
+
+            block.copyFrom (0, 0, source, 0, pos, blockSize);
+            engine.process (block, s, (double) pos / sr, -1.0, nullptr, 0.0f, false, fifo);
+            std::copy (block.getReadPointer (0), block.getReadPointer (0) + blockSize,
+                       out.begin() + pos);
+        }
+
+        return out;
+    };
+
+    const auto leadOnly = render (false, false);
+    const auto switched = render (true, true);
+
+    double maxDiffBefore = 0.0;
+    for (int i = 0; i < switchAt; ++i)
+        maxDiffBefore = std::max (maxDiffBefore, (double) std::abs (switched[(size_t) i] - leadOnly[(size_t) i]));
+
+    check (maxDiffBefore == 0.0, "bus off with four voices set up: output bit-identical to no harmony",
+           "max difference " + juce::String (maxDiffBefore, 9));
+
+    const int settleFrom = switchAt + (int) (sr * 0.3);
+    const int settleTo = total - blockSize;
+    double energy = 0.0;
+    float settledPeak = 0.0f, transitionPeak = 0.0f;
+
+    for (int i = settleFrom; i < settleTo; ++i)
+    {
+        const float d = switched[(size_t) i] - leadOnly[(size_t) i];
+        energy += (double) d * d;
+        settledPeak = juce::jmax (settledPeak, std::abs (d));
+    }
+
+    for (int i = switchAt; i < settleFrom; ++i)
+        transitionPeak = juce::jmax (transitionPeak, std::abs (switched[(size_t) i] - leadOnly[(size_t) i]));
+
+    const double harmonyRms = std::sqrt (energy / (double) (settleTo - settleFrom));
+
+    check (harmonyRms > 0.02, "bus on: the voices are rendered",
+           "harmony rms " + juce::String (harmonyRms, 4));
+
+    check (transitionPeak <= settledPeak * 1.25f, "switching the bus on does not click",
+           "transition peak " + juce::String (transitionPeak, 3)
+               + " vs settled " + juce::String (settledPeak, 3));
+}
+
+/** Note Transition: the glide between notes has to take the musical length
+    asked for at the host's tempo - that is the whole promise of the control. */
+static void testNoteTransition()
+{
+    std::printf ("\nNote transition (tempo-locked)\n");
+
+    check (std::abs (transitionSecondsFor (6, 120.0) - 0.5f) < 1.0e-6f
+               && std::abs (transitionSecondsFor (2, 120.0) - 0.125f) < 1.0e-6f
+               && std::abs (transitionSecondsFor (1, 90.0) - 1.0f / 9.0f) < 1.0e-6f,
+           "note values convert at the host tempo",
+           "1/4 @ 120 = 500 ms, 1/16 @ 120 = 125 ms, 1/16T @ 90 = 111 ms");
+
+    check (transitionSecondsFor (0, 120.0) == 0.0f, "Off adds no glide");
+
+    // An in-tune singer steps from A4 to C5, hard tune. Measure when the output
+    // lands on the new note, and how closely the move follows its S-curve.
+    const double sr = 44100.0;
+    const int hop = 256;
+    const float hopSeconds = (float) hop / (float) sr;
+    const int jumpAt = 100;
+
+    struct Result { float arriveSeconds; float curveError; };
+
+    auto measure = [&] (int step, double bpm)
+    {
+        RetuneEngine re;
+        re.prepare (sr, hop);
+
+        ScaleQuantizer q;
+        q.setKey (0);
+        q.setScale (0);              // chromatic
+
+        RetuneEngine::Params p;
+        p.retuneMs = 0.0f;
+        p.transitionSeconds = transitionSecondsFor (step, bpm);
+
+        Result r { -1.0f, 0.0f };
+
+        for (int i = 0; i < 600; ++i)
+        {
+            const float sung = i < jumpAt ? 69.0f : 72.0f;
+            const auto out = re.process (sung, true, q, p);
+
+            if (i < jumpAt)
+                continue;
+
+            // The engine advances the glide by a hop on the frame the note
+            // changes, so frame i sits (i - jumpAt + 1) hops into the move.
+            const float elapsed = (float) (i - jumpAt + 1) * hopSeconds;
+
+            if (p.transitionSeconds > 0.0f && elapsed < p.transitionSeconds)
+            {
+                const float x = elapsed / p.transitionSeconds;
+                const float expected = 69.0f + 3.0f * (x * x * (3.0f - 2.0f * x));
+                r.curveError = juce::jmax (r.curveError, std::abs (out.outputMidi - expected));
+            }
+
+            if (r.arriveSeconds < 0.0f && std::abs (out.outputMidi - 72.0f) < 1.0e-3f)
+                r.arriveSeconds = elapsed;
+        }
+
+        return r;
+    };
+
+    const auto off       = measure (0, 120.0);
+    const auto sixteenth = measure (2, 120.0);
+    const auto slow      = measure (2, 60.0);
+    const auto quarter   = measure (6, 120.0);
+
+    std::printf ("         lands: off %.1f ms | 1/16 @120 %.1f ms | 1/16 @60 %.1f ms | 1/4 @120 %.1f ms"
+                 "  (analysis hop %.1f ms)\n",
+                 off.arriveSeconds * 1000.0f, sixteenth.arriveSeconds * 1000.0f,
+                 slow.arriveSeconds * 1000.0f, quarter.arriveSeconds * 1000.0f, hopSeconds * 1000.0f);
+
+    check (off.arriveSeconds >= 0.0f && off.arriveSeconds <= hopSeconds + 1.0e-4f,
+           "Off: the output steps to the new note at once",
+           juce::String (off.arriveSeconds * 1000.0f, 1) + " ms");
+
+    // Landing is judged to a tenth of a cent, and the eased tail of the curve
+    // gets that close a fraction of a hop before the end - so "on time" means
+    // within one analysis hop of the note length, either side.
+    auto onTime = [&] (const Result& r, float seconds)
+    {
+        return std::abs (r.arriveSeconds - seconds) <= hopSeconds;
+    };
+
+    check (onTime (sixteenth, 0.125f), "1/16 at 120 BPM lands in 125 ms",
+           juce::String (sixteenth.arriveSeconds * 1000.0f, 1) + " ms");
+    check (onTime (quarter, 0.5f), "1/4 at 120 BPM lands in 500 ms",
+           juce::String (quarter.arriveSeconds * 1000.0f, 1) + " ms");
+    check (onTime (slow, 0.25f), "at 60 BPM the same 1/16 takes 250 ms",
+           juce::String (slow.arriveSeconds * 1000.0f, 1) + " ms");
+    check (sixteenth.curveError < 0.02f, "the move follows its S-curve at every hop",
+           "max error " + juce::String (sixteenth.curveError * 100.0f, 2) + " cents");
+}
+
+/** Correction Amount scales how far the pitch is pulled, and nothing else. */
+static void testCorrectionAmount()
+{
+    std::printf ("\nCorrection amount\n");
+
+    const double sr = 44100.0;
+    const double flatA = 440.0 * std::pow (2.0, -40.0 / 1200.0);   // 40 cents flat
+
+    CorrectionEngine::Settings s;
+    s.inputType = InputType::instrument;
+    s.tracking = 0.5f;
+    s.scaleIndex = 0;
+    s.retune.retuneMs = 0.0f;
+    s.mix = 1.0f;
+    s.outputGain = 1.0f;
+
+    for (float amount : { 1.0f, 0.5f, 0.0f })
+    {
+        s.correctionAmount = amount;
+
+        float outHz = 0.0f, peak = 0.0f;
+        runChain (sr, flatA, s, outHz, peak);
+
+        const float cents = centsBetween (outHz, 440.0f);
+        const float expected = -40.0f * (1.0f - amount);
+
+        check (std::abs (cents - expected) < 2.0f,
+               "amount " + juce::String ((int) (amount * 100.0f)) + "% leaves the note "
+                   + juce::String (expected, 0) + " cents from A440",
+               juce::String (cents, 2) + " cents");
+    }
+
+    // Transpose is a decision, not a correction: it must survive amount 0.
+    s.correctionAmount = 0.0f;
+    s.retune.transposeSemis = 12.0f;
+
+    float outHz = 0.0f, peak = 0.0f;
+    runChain (sr, flatA, s, outHz, peak);
+
+    const float err = std::abs (centsBetween (outHz, (float) (flatA * 2.0)));
+    check (err < 2.0f, "amount 0% still applies transpose",
+           juce::String (outHz, 2) + " Hz vs " + juce::String (flatA * 2.0, 2) + " Hz");
+}
+
 int main()
 {
     std::printf ("HELIX Tune - DSP verification\n");
@@ -1356,6 +1700,10 @@ int main()
     testShifterDelayDrift();
     testShifterRatioAccuracy();
     testEndToEndCorrection();
+    testGenericInputType();
+    testNoteTransition();
+    testCorrectionAmount();
+    testHarmonyMasterSwitch();
     testDiatonicHarmony();
     testHarmonyRendering();
     testShifterOnRealisticVoice();
