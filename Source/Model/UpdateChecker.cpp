@@ -1,4 +1,5 @@
 #include "UpdateChecker.h"
+#include <juce_cryptography/juce_cryptography.h>   // SHA256
 
 namespace helix
 {
@@ -98,6 +99,55 @@ bool UpdateChecker::isNewerVersion (const juce::String& candidate, const juce::S
     return false;
 }
 
+bool UpdateChecker::isTrustedInstallerUrl (const juce::String& url)
+{
+    // Compared exactly, case and all: anything that is not GitHub's own form
+    // of this repository's download path is refused rather than normalised.
+    const auto prefix = juce::String ("https://github.com/") + kOwner + "/" + kRepo
+                      + "/releases/download/";
+
+    if (! url.startsWith (prefix))
+        return false;
+
+    // What remains must be exactly "<tag>/<file>.exe", each part made only of
+    // characters that cannot carry a query, an escape or a path step.
+    const auto rest = url.substring (prefix.length());
+    const auto tag  = rest.upToFirstOccurrenceOf ("/", false, false);
+    const auto file = rest.fromFirstOccurrenceOf ("/", false, false);
+
+    auto plain = [] (const juce::String& s)
+    {
+        return s.isNotEmpty()
+            && s.containsOnly ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+            && ! s.startsWithChar ('.')
+            && ! s.contains ("..");
+    };
+
+    return plain (tag) && plain (file) && file.endsWithIgnoreCase (".exe");
+}
+
+juce::String UpdateChecker::parseSha256Digest (const juce::String& digest)
+{
+    if (! digest.startsWithIgnoreCase ("sha256:"))
+        return {};
+
+    const auto hex = digest.substring (7).trim().toLowerCase();
+
+    return (hex.length() == 64 && hex.containsOnly ("0123456789abcdef")) ? hex : juce::String();
+}
+
+bool UpdateChecker::verifyDownload (const juce::File& file, juce::int64 expectedSize,
+                                    const juce::String& expectedSha256)
+{
+    if (expectedSize <= 0 || expectedSha256.length() != 64 || ! file.existsAsFile())
+        return false;
+
+    if (file.getSize() != expectedSize)
+        return false;
+
+    return juce::SHA256 (file).toHexString().equalsIgnoreCase (expectedSha256);
+}
+
 void UpdateChecker::checkInBackground (bool force)
 {
     if (isThreadRunning())
@@ -144,78 +194,111 @@ UpdateChecker::Status UpdateChecker::getStatus() const
 void UpdateChecker::run()
 {
     if (job == Job::check)
+        runCheck();
+    else
+        runDownload();
+}
+
+void UpdateChecker::runCheck()
+{
+    const juce::String endpoint = juce::String ("https://api.github.com/repos/")
+                                + kOwner + "/" + kRepo + "/releases/latest";
+
+    Status result;
+    result.checked = true;
+
+    auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
+                       .withConnectionTimeoutMs (8000)
+                       .withExtraHeaders (juce::String ("User-Agent: ") + kUserAgent
+                                          + "\r\nAccept: application/vnd.github+json");
+
+    if (auto stream = juce::URL (endpoint).createInputStream (options))
     {
-        const juce::String endpoint = juce::String ("https://api.github.com/repos/")
-                                    + kOwner + "/" + kRepo + "/releases/latest";
+        const auto body = stream->readEntireStreamAsString();
 
-        Status result;
-        result.checked = true;
-
-        auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
-                           .withConnectionTimeoutMs (8000)
-                           .withExtraHeaders (juce::String ("User-Agent: ") + kUserAgent
-                                              + "\r\nAccept: application/vnd.github+json");
-
-        if (auto stream = juce::URL (endpoint).createInputStream (options))
+        if (! threadShouldExit())
         {
-            const auto body = stream->readEntireStreamAsString();
+            const auto json = juce::JSON::parse (body);
 
-            if (! threadShouldExit())
+            const auto tag = json.getProperty ("tag_name", "").toString();
+            result.latestVersion = tag;
+
+            // Only ever this repository's own page, whatever the feed says.
+            const auto page = json.getProperty ("html_url", "").toString();
+            result.releaseUrl = page.startsWith (getReleasesPageUrl() + "/") ? page : getReleasesPageUrl();
+
+            if (const auto* assets = json.getProperty ("assets", {}).getArray())
             {
-                const auto json = juce::JSON::parse (body);
-
-                const auto tag = json.getProperty ("tag_name", "").toString();
-                result.latestVersion = tag;
-                result.releaseUrl = json.getProperty ("html_url", getReleasesPageUrl()).toString();
-
-                // Prefer the Windows installer asset if the release has one.
-                if (const auto* assets = json.getProperty ("assets", {}).getArray())
+                for (const auto& a : *assets)
                 {
-                    for (const auto& a : *assets)
+                    const auto name = a.getProperty ("name", "").toString();
+
+                    if (! name.endsWithIgnoreCase (".exe"))
+                        continue;
+
+                    const auto url  = a.getProperty ("browser_download_url", "").toString();
+                    const auto sha  = parseSha256Digest (a.getProperty ("digest", "").toString());
+                    const auto size = (juce::int64) a.getProperty ("size", 0);
+
+                    // Offered for automatic install only if it can be checked
+                    // end to end; otherwise the menu falls back to the page.
+                    if (isTrustedInstallerUrl (url) && sha.isNotEmpty() && size > 0)
                     {
-                        const auto name = a.getProperty ("name", "").toString();
-
-                        if (name.endsWithIgnoreCase (".exe"))
-                        {
-                            result.installerUrl = a.getProperty ("browser_download_url", "").toString();
-                            break;
-                        }
+                        result.installerUrl    = url;
+                        result.installerSha256 = sha;
+                        result.installerSize   = size;
                     }
+
+                    break;
                 }
-
-                result.updateAvailable = tag.isNotEmpty()
-                                       && isNewerVersion (tag, getCurrentVersion());
             }
+
+            result.updateAvailable = tag.isNotEmpty()
+                                   && isNewerVersion (tag, getCurrentVersion());
         }
-
-        settings().setValue ("lastUpdateCheck",
-                             juce::String (juce::Time::getCurrentTime().toMilliseconds()));
-        settings().saveIfNeeded();
-
-        const juce::ScopedLock sl (lock);
-        result.checking = false;
-        status = result;
-        return;
     }
 
-    // ---- download -------------------------------------------------------
-    juce::String url;
+    settings().setValue ("lastUpdateCheck",
+                         juce::String (juce::Time::getCurrentTime().toMilliseconds()));
+    settings().saveIfNeeded();
+
+    const juce::ScopedLock sl (lock);
+    result.checking = false;
+    status = result;
+}
+
+void UpdateChecker::runDownload()
+{
+    juce::String url, sha;
+    juce::int64 expectedSize = 0;
+
     {
         const juce::ScopedLock sl (lock);
         url = status.installerUrl;
+        sha = status.installerSha256;
+        expectedSize = status.installerSize;
     }
 
-    if (url.isEmpty())
+    auto fail = [this]
     {
         downloadProgress = -1.0f;
         downloading = false;
+    };
+
+    // Checked again here rather than trusted from the check, so no path can
+    // reach startAsProcess with an unvetted URL.
+    if (! isTrustedInstallerUrl (url) || sha.isEmpty() || expectedSize <= 0)
+    {
+        fail();
         return;
     }
 
+    // A fresh, unpredictable name every time, so nothing can be planted at a
+    // known path ahead of the download.
     const auto target = juce::File::getSpecialLocation (juce::File::tempDirectory)
-                            .getChildFile ("HELIX-Tune-Setup.exe");
-
-    target.deleteFile();
+                            .getNonexistentChildFile ("HELIX-Tune-Setup-"
+                                                          + juce::String::toHexString (juce::Random::getSystemRandom().nextInt64()),
+                                                      ".exe", false);
 
     auto options = juce::URL::InputStreamOptions (juce::URL::ParameterHandling::inAddress)
                        .withConnectionTimeoutMs (15000)
@@ -223,44 +306,50 @@ void UpdateChecker::run()
 
     if (auto stream = juce::URL (url).createInputStream (options))
     {
-        juce::FileOutputStream out (target);
-
-        if (out.openedOk())
         {
-            const auto total = stream->getTotalLength();
-            juce::int64 written = 0;
-            juce::HeapBlock<char> buffer (32768);
+            juce::FileOutputStream out (target);
 
-            while (! threadShouldExit())
+            if (out.openedOk())
             {
-                const int read = stream->read (buffer, 32768);
-                if (read <= 0)
-                    break;
+                juce::int64 written = 0;
+                juce::HeapBlock<char> buffer (32768);
 
-                out.write (buffer, (size_t) read);
-                written += read;
+                while (! threadShouldExit())
+                {
+                    const int read = stream->read (buffer, 32768);
+                    if (read <= 0)
+                        break;
 
-                if (total > 0)
-                    downloadProgress = juce::jlimit (0.0f, 1.0f, (float) ((double) written / (double) total));
+                    // Never write more than GitHub said the file holds. A larger
+                    // file cannot match the digest anyway, and this stops a
+                    // hostile response from filling the disk.
+                    written += read;
+                    if (written > expectedSize)
+                        break;
+
+                    out.write (buffer, (size_t) read);
+                    downloadProgress = juce::jlimit (0.0f, 1.0f, (float) ((double) written / (double) expectedSize));
+                }
+
+                out.flush();
             }
+        }   // closed before hashing, and before Windows is asked to run it
 
-            out.flush();
+        if (! threadShouldExit() && verifyDownload (target, expectedSize, sha))
+        {
+            downloadProgress = 1.0f;
+            downloading = false;
 
-            if (! threadShouldExit() && written > 0)
-            {
-                downloadProgress = 1.0f;
-                downloading = false;
-
-                // The installer replaces files the host may still have loaded,
-                // so it is started and left to ask the user to close things.
-                target.startAsProcess();
-                return;
-            }
+            // The installer replaces files the host may still have loaded, so
+            // it is started and left to ask the user to close things.
+            target.startAsProcess();
+            return;
         }
     }
 
-    downloadProgress = -1.0f;
-    downloading = false;
+    // Anything that did not verify is removed rather than left for later.
+    target.deleteFile();
+    fail();
 }
 
 } // namespace helix

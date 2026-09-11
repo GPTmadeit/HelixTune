@@ -63,10 +63,12 @@ pitch lands within 0.1 cents of target**, and the whole chain costs about
 3. Rescan plugins in your DAW.
 
 > **Staying up to date.** The version button in the plugin's header checks
-> GitHub for new releases and will download and run the installer for you.
-> Close your DAW first so the plugin file isn't locked. Automatic checks can
-> be turned off from that same menu — the preference is stored per machine,
-> not in your project.
+> GitHub for new releases and will download and run the installer for you. It
+> only accepts an installer from this repository's own release downloads, and
+> only runs it once the file matches the size and SHA-256 digest GitHub
+> publishes for it. Close your DAW first so the plugin file isn't locked.
+> Automatic checks can be turned off from that same menu — the preference is
+> stored per machine, not in your project.
 
 <details>
 <summary><b>Manual install (no admin rights)</b></summary>

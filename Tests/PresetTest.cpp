@@ -17,6 +17,7 @@
 
 #include "PluginProcessor.h"
 #include "Model/PresetManager.h"
+#include "Model/UpdateChecker.h"
 
 #include <cmath>
 #include <cstdio>
@@ -295,6 +296,69 @@ static void testHarmonyMasterSwitch()
     }
 }
 
+/** The updater downloads a file and runs it with admin rights, so what it
+    will accept has to be pinned down exactly. */
+static void testUpdaterSafety()
+{
+    std::printf ("\nUpdater safety\n");
+
+    check (UpdateChecker::isTrustedInstallerUrl (
+               "https://github.com/GPTmadeit/HelixTune/releases/download/v1.1.1/HELIX-Tune-1.1.1-Windows.exe"),
+           "accepts this repository's own release installer");
+
+    const char* hostile[] =
+    {
+        "http://github.com/GPTmadeit/HelixTune/releases/download/v1.1.1/HELIX-Tune-1.1.1-Windows.exe",
+        "https://github.com.evil.example/GPTmadeit/HelixTune/releases/download/v1/x.exe",
+        "https://github.com@evil.example/GPTmadeit/HelixTune/releases/download/v1/x.exe",
+        "https://evil.example/GPTmadeit/HelixTune/releases/download/v1/x.exe",
+        "https://github.com/SomeoneElse/HelixTune/releases/download/v1/x.exe",
+        "https://github.com/GPTmadeit/OtherRepo/releases/download/v1/x.exe",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/../../../evil/x.exe",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/%2e%2e/x.exe",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/x.exe?next=https://evil.example",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/x.exe#fragment",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/sub/x.exe",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/x.zip",
+        "https://github.com/GPTmadeit/HelixTune/releases/download/v1/",
+        "HTTPS://GITHUB.COM/GPTmadeit/HelixTune/releases/download/v1/x.exe",
+        ""
+    };
+
+    int accepted = 0;
+    for (const auto* u : hostile)
+    {
+        if (UpdateChecker::isTrustedInstallerUrl (u))
+        {
+            ++accepted;
+            std::printf ("         wrongly accepted: %s\n", u);
+        }
+    }
+
+    check (accepted == 0, "refuses every other host, owner, scheme, path and file type",
+           juce::String ((int) (sizeof (hostile) / sizeof (hostile[0]))) + " hostile URLs");
+
+    const juce::String abc ("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    check (UpdateChecker::parseSha256Digest ("sha256:" + abc) == abc
+               && UpdateChecker::parseSha256Digest ("sha256:" + abc.toUpperCase()) == abc
+               && UpdateChecker::parseSha256Digest ("md5:" + abc).isEmpty()
+               && UpdateChecker::parseSha256Digest ("sha256:xyz").isEmpty()
+               && UpdateChecker::parseSha256Digest ({}).isEmpty(),
+           "parses only well-formed sha256 digests");
+
+    // The published SHA-256 test vector: "abc".
+    const auto file = juce::File::createTempFile (".bin");
+    file.replaceWithData ("abc", 3);
+
+    check (UpdateChecker::verifyDownload (file, 3, abc), "a file matching size and SHA-256 is accepted");
+    check (! UpdateChecker::verifyDownload (file, 4, abc), "a size mismatch is refused");
+    check (! UpdateChecker::verifyDownload (file, 3, abc.replaceCharacter ('b', 'c')), "a digest mismatch is refused");
+    check (! UpdateChecker::verifyDownload (file, 3, {}), "a missing digest is refused, not waved through");
+
+    file.deleteFile();
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -304,6 +368,7 @@ int main()
 
     testPresetLoading();
     testHarmonyMasterSwitch();
+    testUpdaterSafety();
 
     std::printf ("\n=============================\n");
     std::printf ("%s\n", failures == 0 ? "all processor checks OK" : "FAILURES");

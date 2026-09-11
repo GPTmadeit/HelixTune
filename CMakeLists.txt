@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(HelixTune VERSION 1.1.0 LANGUAGES C CXX)
+project(HelixTune VERSION 1.1.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -108,6 +108,7 @@ target_compile_definitions(HelixTune PUBLIC
 target_link_libraries(HelixTune PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp
+    juce::juce_cryptography
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
@@ -233,6 +234,7 @@ target_compile_definitions(HelixTunePresetTest PRIVATE
 target_link_libraries(HelixTunePresetTest PRIVATE
     juce::juce_audio_utils
     juce::juce_dsp
+    juce::juce_cryptography
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)
