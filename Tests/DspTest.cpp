@@ -1282,6 +1282,219 @@ static void testSilence()
 }
 
 
+/** Linking renders a mono source once. The claim is that nothing audible - or
+    even measurable - changes, including across the moment the input stops
+    being mono, so this compares against an engine that never links. */
+static void testStereoLinkingIsExact()
+{
+    std::printf ("\nStereo linking\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 256;
+    const int total = (int) (sr * 3.0);
+    const int split = (int) (sr * 1.5);
+
+    juce::AudioBuffer<float> source (1, total);
+    fillVoiceLike (source, sr, 196.0, -40.0f);
+
+    std::vector<float> inL ((size_t) total), inR ((size_t) total);
+    for (int i = 0; i < total; ++i)
+    {
+        inL[(size_t) i] = source.getSample (0, i);
+        inR[(size_t) i] = i < split ? source.getSample (0, i) : 0.9f * source.getSample (0, i - 37);
+    }
+
+    CorrectionEngine::Settings s;
+    s.inputType = InputType::altoTenor;
+    s.key = 0;
+    s.scaleIndex = 1;
+    s.retune.retuneMs = 10.0f;
+    s.throatLength = 1.15f;            // formant filter live, so its state is copied too
+    s.mix = 1.0f;
+    s.outputGain = 1.0f;
+    s.harmony.anyEnabled = true;
+    s.harmony.level = 0.7f;
+    s.harmony.voices[0].enabled = true;
+    s.harmony.voices[0].degrees = 2;
+    s.harmony.voices[0].level = 0.7f;
+    s.harmony.voices[0].pan = -0.4f;
+
+    auto render = [&] (bool link, std::vector<float>& outL, std::vector<float>& outR)
+    {
+        auto engine = std::make_unique<CorrectionEngine>();
+        engine->prepare (sr, blockSize, 2);
+        engine->setStereoLinking (link);
+
+        auto fifo = std::make_unique<PitchFifo>();
+        juce::AudioBuffer<float> block (2, blockSize);
+
+        outL.assign ((size_t) total, 0.0f);
+        outR.assign ((size_t) total, 0.0f);
+
+        for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+        {
+            std::copy (inL.begin() + pos, inL.begin() + pos + blockSize, block.getWritePointer (0));
+            std::copy (inR.begin() + pos, inR.begin() + pos + blockSize, block.getWritePointer (1));
+
+            engine->process (block, s, (double) pos / sr, -1.0, nullptr, 0.0f, false, *fifo);
+
+            std::copy (block.getReadPointer (0), block.getReadPointer (0) + blockSize, outL.begin() + pos);
+            std::copy (block.getReadPointer (1), block.getReadPointer (1) + blockSize, outR.begin() + pos);
+        }
+    };
+
+    std::vector<float> linkedL, linkedR, separateL, separateR;
+    render (true,  linkedL, linkedR);
+    render (false, separateL, separateR);
+
+    double maxDiff = 0.0;
+    for (int i = 0; i < total; ++i)
+        maxDiff = juce::jmax (maxDiff,
+                              (double) std::abs (linkedL[(size_t) i] - separateL[(size_t) i]),
+                              (double) std::abs (linkedR[(size_t) i] - separateR[(size_t) i]));
+
+    check (maxDiff == 0.0, "a mono source rendered once is bit-identical to rendering both channels",
+           "max difference " + juce::String (maxDiff, 12) + ", across the switch to stereo at 1.5 s");
+
+    double side = 0.0;
+    for (int i = split + (int) sr / 10; i < total; ++i)
+    {
+        const double d = linkedL[(size_t) i] - linkedR[(size_t) i];
+        side += d * d;
+    }
+
+    check (side > 1.0e-3, "the channels separate once the input does",
+           "side energy " + juce::String (side, 4));
+}
+
+/** Detection runs on a decimated copy above 64 kHz. It must still land the
+    correction where it did at 44.1 kHz. */
+static void testHighSampleRates()
+{
+    std::printf ("\nHigh sample rates (detection on a decimated copy)\n");
+
+    const double flatA = 440.0 * std::pow (2.0, -40.0 / 1200.0);
+
+    for (double sr : { 88200.0, 96000.0, 192000.0 })
+    {
+        for (auto type : { InputType::instrument, InputType::generic })
+        {
+            CorrectionEngine::Settings s;
+            s.inputType = type;
+            s.tracking = 0.5f;
+            s.key = 0;
+            s.scaleIndex = 0;
+            s.retune.retuneMs = 0.0f;
+            s.mix = 1.0f;
+            s.outputGain = 1.0f;
+
+            float outHz = 0.0f, peak = 0.0f;
+            runChain (sr, flatA, s, outHz, peak);
+
+            const float err = std::abs (centsBetween (outHz, 440.0f));
+            check (err < 2.0f,
+                   juce::String (sr / 1000.0, 1) + " kHz, " + (type == InputType::generic ? "Generic" : "Instrument")
+                       + ": 429.9 Hz corrected to A440",
+                   juce::String (outHz, 2) + " Hz, " + juce::String (err, 2) + " cents");
+        }
+    }
+}
+
+/** Idle voices no longer run. That has to mean silent and free while off, a
+    clean start when switched on, and nothing left behind when switched off. */
+static void testHarmonyVoiceSwitching()
+{
+    std::printf ("\nHarmony voices switching on and off\n");
+
+    const double sr = 44100.0;
+    const int blockSize = 512;
+    const int total = (int) (sr * 3.0);
+
+    juce::AudioBuffer<float> source (1, total);
+    fillVoiceLike (source, sr, 196.0, -40.0f);
+
+    CorrectionEngine::Settings s;
+    s.inputType = InputType::altoTenor;
+    s.key = 0;
+    s.scaleIndex = 1;
+    s.retune.retuneMs = 10.0f;
+    s.mix = 1.0f;
+    s.outputGain = 1.0f;
+    s.harmony.anyEnabled = true;
+    s.harmony.level = 0.7f;
+
+    s.harmony.voices[0].enabled = true;
+    s.harmony.voices[0].degrees = 2;
+    s.harmony.voices[0].level = 0.7f;
+    s.harmony.voices[0].pan = -0.5f;
+
+    s.harmony.voices[1].enabled = false;
+    s.harmony.voices[1].degrees = 4;
+    s.harmony.voices[1].level = 0.7f;
+    s.harmony.voices[1].pan = 0.5f;
+
+    auto reference = std::make_unique<CorrectionEngine>();
+    auto toggled   = std::make_unique<CorrectionEngine>();
+    reference->prepare (sr, blockSize, 2);
+    toggled->prepare (sr, blockSize, 2);
+
+    auto fifoA = std::make_unique<PitchFifo>();
+    auto fifoB = std::make_unique<PitchFifo>();
+
+    juce::AudioBuffer<float> blockA (2, blockSize), blockB (2, blockSize);
+    std::vector<float> diff ((size_t) total, 0.0f);
+
+    for (int pos = 0; pos + blockSize <= total; pos += blockSize)
+    {
+        const double t = (double) pos / sr;
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            blockA.copyFrom (ch, 0, source, 0, pos, blockSize);
+            blockB.copyFrom (ch, 0, source, 0, pos, blockSize);
+        }
+
+        auto sB = s;
+        sB.harmony.voices[1].enabled = (t >= 1.0 && t < 2.0);
+
+        reference->process (blockA, s,  t, -1.0, nullptr, 0.0f, false, *fifoA);
+        toggled->process   (blockB, sB, t, -1.0, nullptr, 0.0f, false, *fifoB);
+
+        for (int i = 0; i < blockSize; ++i)
+            diff[(size_t) (pos + i)] = std::abs (blockA.getSample (0, i) - blockB.getSample (0, i))
+                                     + std::abs (blockA.getSample (1, i) - blockB.getSample (1, i));
+    }
+
+    auto maxOver = [&] (double from, double to)
+    {
+        float m = 0.0f;
+        for (int i = (int) (from * sr); i < juce::jmin (total, (int) (to * sr)); ++i)
+            m = juce::jmax (m, diff[(size_t) i]);
+        return m;
+    };
+
+    auto rmsOver = [&] (double from, double to)
+    {
+        double acc = 0.0;
+        int count = 0;
+        for (int i = (int) (from * sr); i < juce::jmin (total, (int) (to * sr)); ++i, ++count)
+            acc += (double) diff[(size_t) i] * diff[(size_t) i];
+        return (float) std::sqrt (acc / juce::jmax (1, count));
+    };
+
+    const float before = maxOver (0.0, 1.0);
+    const float during = rmsOver (1.2, 2.0);
+    const float after  = maxOver (2.2, 3.0);
+
+    check (before == 0.0f, "a voice that is off leaves the output bit-identical",
+           "max difference " + juce::String (before, 9));
+    check (during > 1.0e-3f, "switching it on renders it",
+           "difference rms " + juce::String (during, 4));
+    check (after == 0.0f, "switching it off leaves nothing behind within 200 ms",
+           "max difference " + juce::String (after, 9));
+}
+
+
 /** Not a pass/fail check - a number the user needs in order to decide whether
     this fits on a track. Reported as a real-time factor: 100x means one second
     of audio costs 10 ms of CPU. */
@@ -1714,6 +1927,9 @@ int main()
     testKeyDetection();
     testTransientGuard();
     testFormantProcessor();
+    testStereoLinkingIsExact();
+    testHighSampleRates();
+    testHarmonyVoiceSwitching();
     testStability();
     testSilence();
     reportPerformance();

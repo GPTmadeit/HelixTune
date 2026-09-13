@@ -1,6 +1,14 @@
 #include "PsolaShifter.h"
 #include <cmath>
 #include <algorithm>
+#include <cstring>
+
+#if defined (_M_X64) || defined (__x86_64__) || defined (__SSE2__)
+ #include <emmintrin.h>
+ #define HELIX_HAS_SSE2 1
+#else
+ #define HELIX_HAS_SSE2 0
+#endif
 
 namespace helix
 {
@@ -10,6 +18,40 @@ static inline int64_t nextPow2 (int64_t v)
     int64_t p = 1;
     while (p < v) p <<= 1;
     return p;
+}
+
+/** Sum of a[i] * b[i] - the inner loop of the epoch search, and so most of what
+    a shifter costs. Products are gathered four at a time in float and folded
+    into a double every 64 samples, which keeps the sum as precise as a plain
+    double loop to far below anything the peak interpolation can resolve. The
+    grouping depends only on the index, never on where the buffers sit in
+    memory, so identical input always gives an identical score. */
+static double dotProduct (const float* a, const float* b, int n) noexcept
+{
+    double total = 0.0;
+    int i = 0;
+
+   #if HELIX_HAS_SSE2
+    const int whole = n & ~3;
+
+    while (i < whole)
+    {
+        const int runEnd = juce::jmin (whole, i + 64);
+        __m128 acc = _mm_setzero_ps();
+
+        for (; i < runEnd; i += 4)
+            acc = _mm_add_ps (acc, _mm_mul_ps (_mm_loadu_ps (a + i), _mm_loadu_ps (b + i)));
+
+        float lanes[4];
+        _mm_storeu_ps (lanes, acc);
+        total += (double) lanes[0] + (double) lanes[1] + (double) lanes[2] + (double) lanes[3];
+    }
+   #endif
+
+    for (; i < n; ++i)
+        total += (double) a[i] * (double) b[i];
+
+    return total;
 }
 
 void PsolaShifter::setMinFrequency (float hz) noexcept
@@ -42,6 +84,12 @@ void PsolaShifter::prepare (double sampleRate, float lowestSupportedHz, int maxB
     outMask = outSize - 1;
 
     corrScores.assign ((size_t) (2 * (capacityPeriod / 4 + 2) + 1), 0.0);
+
+    // The search reads at most 512 reference samples, and that many candidate
+    // samples again plus one for every lag it tries.
+    refScratch.assign (512, 0.0f);
+    candScratch.assign (512 + corrScores.size(), 0.0f);
+    energyPrefix.assign (512 + corrScores.size() + 1, 0.0);
 
     windowSize = 2048;
     window.resize ((size_t) windowSize + 1);
@@ -91,6 +139,21 @@ float PsolaShifter::readInput (double absPos) const noexcept
     return ((c3 * f + c2) * f + c1) * f + x0;
 }
 
+void PsolaShifter::copyFromRing (int64_t start, int count, float* dest) const noexcept
+{
+    const int size = (int) inBuf.size();
+    int from = wrapIn (start);
+    int done = 0;
+
+    while (done < count)
+    {
+        const int run = juce::jmin (count - done, size - from);
+        std::memcpy (dest + done, inBuf.data() + from, (size_t) run * sizeof (float));
+        done += run;
+        from = 0;
+    }
+}
+
 double PsolaShifter::refineMark (double predicted, float period) noexcept
 {
     // Predicting the next mark as "previous + one period" accumulates phase
@@ -108,6 +171,7 @@ double PsolaShifter::refineMark (double predicted, float period) noexcept
     const int corrLen = juce::jlimit (32, 512, (int) period);
     const int search  = juce::jmax (1, (int) (period * 0.25f));
     const int half    = corrLen / 2;
+    const int width   = 2 * half;
 
     const int64_t refBase  = (int64_t) std::llround (analysisPos);
     const int64_t candBase = (int64_t) std::llround (predicted);
@@ -118,26 +182,38 @@ double PsolaShifter::refineMark (double predicted, float period) noexcept
         return predicted;
 
     const int count = 2 * search + 1;
-    if ((int) corrScores.size() < count)
+    const int span  = width + count - 1;
+
+    if ((int) corrScores.size() < count
+        || (int) refScratch.size() < width
+        || (int) candScratch.size() < span
+        || (int) energyPrefix.size() < span + 1)
         return predicted;
+
+    // Unwrapped once, so every lag below is a straight run over contiguous
+    // memory instead of a masked ring lookup per sample. This search is where
+    // a shifter spends most of its time, and it scales with the period squared.
+    copyFromRing (refBase - half, width, refScratch.data());
+    copyFromRing (candBase - search - half, span, candScratch.data());
+
+    // Each candidate window's energy from one running sum, rather than adding
+    // up width squares again for every lag.
+    energyPrefix[0] = 0.0;
+    for (int k = 0; k < span; ++k)
+    {
+        const double x = candScratch[(size_t) k];
+        energyPrefix[(size_t) k + 1] = energyPrefix[(size_t) k] + x * x;
+    }
 
     double bestScore = -1.0e30;
     int    bestIndex = 0;
 
     for (int i = 0; i < count; ++i)
     {
-        const int d = i - search;
-        double dot = 0.0, energy = 1.0e-12;
+        const double dot    = dotProduct (refScratch.data(), candScratch.data() + i, width);
+        const double energy = juce::jmax (0.0, energyPrefix[(size_t) (i + width)] - energyPrefix[(size_t) i]);
+        const double score  = dot / std::sqrt (energy + 1.0e-12);
 
-        for (int j = -half; j < half; ++j)
-        {
-            const float a = inBuf[(size_t) wrapIn (refBase + j)];
-            const float b = inBuf[(size_t) wrapIn (candBase + d + j)];
-            dot    += (double) a * b;
-            energy += (double) b * b;
-        }
-
-        const double score = dot / std::sqrt (energy);
         corrScores[(size_t) i] = score;
 
         if (score > bestScore)

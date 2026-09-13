@@ -60,6 +60,7 @@ private:
     void  emitGrain (double analysisMark, double synthMark, float period, float formantRatio) noexcept;
     double refineMark (double predicted, float period) noexcept;
     float readInput (double absPos) const noexcept;
+    void  copyFromRing (int64_t start, int count, float* dest) const noexcept;
 
     inline int  wrapIn  (int64_t p) const noexcept { return (int) (p & inMask); }
     inline int  wrapOut (int64_t p) const noexcept { return (int) (p & outMask); }
@@ -92,6 +93,15 @@ private:
     // Correlation scores for one mark search, sized at prepare() so the
     // epoch refinement never allocates on the audio thread.
     std::vector<double> corrScores;
+
+    // The mark search's samples, unwrapped from the ring so the correlation
+    // runs over contiguous memory, plus the running energy of the candidates.
+    // Also sized at prepare(). Every member is a value or a vector, so a
+    // prepared shifter can be assigned to another of the same configuration
+    // without allocating - the engine relies on that to split a linked
+    // stereo pair on the audio thread.
+    std::vector<float>  refScratch, candScratch;
+    std::vector<double> energyPrefix;
 };
 
 } // namespace helix

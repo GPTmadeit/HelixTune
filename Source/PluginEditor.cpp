@@ -258,7 +258,17 @@ void HelixTuneEditor::timerCallback()
 
     harmonyPanel.refreshMasterState();
 
-    repaint (headerBounds);
+    // Only the sweep along the header's bottom edge moves. Repainting the whole
+    // header here redrew every control in it on every tick.
+    repaint (headerBounds.withTop (headerBounds.getBottom() - 2));
+
+    // The latency readout changes only when the input type does.
+    const int latencyNow = processor.getLatencySamples();
+    if (latencyNow != shownLatency)
+    {
+        shownLatency = latencyNow;
+        repaint (latencyBounds);
+    }
 }
 
 void HelixTuneEditor::resized()

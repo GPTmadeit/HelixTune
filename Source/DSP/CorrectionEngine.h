@@ -10,6 +10,7 @@
 #include "TransientGuard.h"
 #include "FormantProcessor.h"
 #include "HarmonyEngine.h"
+#include "AnalysisDecimator.h"
 #include "../Model/PitchTrack.h"
 #include "../Model/GraphModel.h"
 
@@ -86,6 +87,12 @@ public:
     float getLiveMidiNote() const noexcept { return liveMidi; }
     bool  isLiveVoiced() const noexcept { return liveVoiced; }
 
+    /** With identical left and right input the lead is rendered once and
+        copied, which halves its cost for a mono source on a stereo track - the
+        usual case for a vocal. On by default. Exists so the DSP test can turn
+        it off and prove the linked output is bit-identical. */
+    void setStereoLinking (bool shouldLink) noexcept { stereoLinkingEnabled = shouldLink; }
+
 private:
     void applySettings (const Settings& s) noexcept;
     void runAnalysisHop (const Settings& s, double hopTime, double hopPpq,
@@ -98,6 +105,17 @@ private:
     int    latency = 0;
     int    numCh = 2;
     bool   latencyDirty = false;
+
+    // Stereo linking. rightFollowsLeft holds while the right channel's state
+    // is known to equal the left's: from a reset until the input first differs.
+    bool   stereoLinkingEnabled = true;
+    bool   rightFollowsLeft = true;
+
+    // Detection at 44.1/48 kHz whatever the session rate - see AnalysisDecimator.
+    int                analysisDecimation = 1;
+    AnalysisDecimator  decimator;
+    std::vector<float> detHistory;      // newest detector frame, decimated
+    std::vector<float> decimScratch;
 
     PitchDetector    detector;
     PitchStabilizer  stabilizer;

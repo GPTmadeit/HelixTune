@@ -38,16 +38,31 @@ void AutoKeyDisplay::applyDetectedKey()
 
 void AutoKeyDisplay::timerCallback()
 {
-    last = processor.getKeyEstimate();
+    if (! isShowing())
+        return;
+
+    const auto estimate = processor.getKeyEstimate();
+    float movement = 0.0f;
 
     for (int i = 0; i < 12; ++i)
     {
-        const float target = processor.getChroma (i);
-        smoothedChroma[i] += (target - smoothedChroma[i]) * 0.25f;
+        const float step = (processor.getChroma (i) - smoothedChroma[i]) * 0.25f;
+        smoothedChroma[i] += step;
+        movement = juce::jmax (movement, std::abs (step));
     }
 
+    const bool changed = estimate.valid != last.valid
+                      || estimate.rootPitchClass != last.rootPitchClass
+                      || estimate.minor != last.minor
+                      || std::abs (estimate.confidence - last.confidence) > 0.002f;
+
+    last = estimate;
     applyButton.setEnabled (last.valid);
-    repaint();
+
+    // The histogram settles within a second of the singing stopping; after
+    // that there is nothing new to draw.
+    if (changed || movement > 1.0e-4f)
+        repaint();
 }
 
 void AutoKeyDisplay::resized()

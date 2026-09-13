@@ -39,6 +39,7 @@ void HarmonyEngine::reset() noexcept
         v.pitchRatio = 1.0f;
         v.formantRatio = 1.0f;
         v.smoothedGainL = v.smoothedGainR = 0.0f;
+        v.running = false;
     }
 
     lastPeriod = 200.0f;
@@ -101,28 +102,51 @@ void HarmonyEngine::process (const float* monoInput, float* left, float* right,
     if (! p.anyEnabled || numSamples <= 0)
         return;
 
+    // Asymmetric: ease in, but get out of the way quickly. A slow release
+    // leaves the voice audible well into a consonant.
+    const float attack  = 1.0f - std::exp (-1.0f / (float) (fs * 0.025));
+    const float release = 1.0f - std::exp (-1.0f / (float) (fs * 0.005));
+
     for (int i = 0; i < maxVoices; ++i)
     {
         auto& v = voices[(size_t) i];
         const auto& vp = p.voices[(size_t) i];
 
-        // A disabled voice still has to consume input, or its shifter's mark
-        // tracking would be stranded in the past and it would take a noisy
-        // moment to resynchronise when switched back on.
-        const bool audible = vp.enabled && (v.gainL > 0.0f || v.gainR > 0.0f
-                                            || v.smoothedGainL > 1.0e-4f
-                                            || v.smoothedGainR > 1.0e-4f);
+        const bool releasing = v.running && (v.smoothedGainL > 1.0e-4f || v.smoothedGainR > 1.0e-4f);
+
+        // A voice that is off, and has finished fading out, costs nothing.
+        // Idle voices used to keep their shifters running so their mark
+        // tracking stayed current, which made one voice cost exactly as much
+        // as four. Starting from a clean reset instead costs one fade-in, and
+        // the gain smoothing already provides that.
+        if (! vp.enabled && ! releasing)
+        {
+            v.running = false;
+            v.smoothedGainL = v.smoothedGainR = 0.0f;
+            continue;
+        }
+
+        if (! v.running)
+        {
+            v.shifter.reset();
+            std::fill (v.delayLine.begin(), v.delayLine.end(), 0.0f);
+            v.delayPos = 0;
+            v.smoothedGainL = v.smoothedGainR = 0.0f;
+            v.running = true;
+        }
+
+        // Unvoiced, the targets are zero and there is nothing left to fade, but
+        // the shifter and the delay line still have to keep pace with the input.
+        const bool audible = v.gainL > 0.0f || v.gainR > 0.0f || releasing;
 
         if ((int) v.scratch.size() < numSamples)
             v.scratch.resize ((size_t) numSamples);
 
         v.shifter.process (monoInput, v.scratch.data(), numSamples,
-                           vp.enabled ? v.pitchRatio : 1.0f,
-                           v.formantRatio, lastPeriod, lastVoiced);
+                           v.pitchRatio, v.formantRatio, lastPeriod, lastVoiced);
 
         if (! audible)
         {
-            // Keep the delay line moving so the voice stays time-aligned.
             for (int n = 0; n < numSamples; ++n)
             {
                 v.delayLine[(size_t) v.delayPos] = v.scratch[(size_t) n];
@@ -133,11 +157,6 @@ void HarmonyEngine::process (const float* monoInput, float* left, float* right,
             v.smoothedGainL = v.smoothedGainR = 0.0f;
             continue;
         }
-
-        // Asymmetric: ease in, but get out of the way quickly. A slow release
-        // leaves the voice audible well into a consonant.
-        const float attack  = 1.0f - std::exp (-1.0f / (float) (fs * 0.025));
-        const float release = 1.0f - std::exp (-1.0f / (float) (fs * 0.005));
 
         for (int n = 0; n < numSamples; ++n)
         {

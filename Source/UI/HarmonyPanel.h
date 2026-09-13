@@ -56,6 +56,7 @@ private:
 
     float liveMidi = 0.0f;
     bool  liveVoiced = false;
+    juce::uint64 shownReadoutSignature = 0;   // what the live readouts last drew
 
     // -1 until the first refresh, so the initial state is always applied.
     int  masterState = -1;

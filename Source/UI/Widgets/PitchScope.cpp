@@ -30,6 +30,8 @@ void PitchScope::pushFrames (const std::vector<PitchFrame>& frames)
 
     if (! frames.empty())
     {
+        framesArrived = true;
+
         const auto& last = frames.back();
         lastVoiced = last.voiced;
 

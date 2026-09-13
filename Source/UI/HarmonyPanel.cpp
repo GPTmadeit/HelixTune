@@ -90,8 +90,34 @@ void HarmonyPanel::pushFrames (const std::vector<PitchFrame>& frames)
     if (f.voiced)
         liveMidi = f.outputMidi;
 
-    // Only the live readouts move, so repaint those rather than the whole
-    // panel sixty times a second.
+    // Only the live readouts move, and they only need redrawing when a note
+    // they show could have changed. Hashing everything they are computed from
+    // - the sung note, key, scale, note states, and each voice's switch and
+    // interval - still catches a knob turn with the lead held.
+    juce::uint64 h = 1469598103934665603ull;
+    auto mix = [&h] (juce::int64 value)
+    {
+        h ^= (juce::uint64) value;
+        h *= 1099511628211ull;
+    };
+
+    mix (liveVoiced ? (juce::int64) std::lround (liveMidi * 8.0f) : -1);
+    mix ((juce::int64) *processor.apvts.getRawParameterValue (params::key));
+    mix ((juce::int64) *processor.apvts.getRawParameterValue (params::scale));
+
+    for (int pc = 0; pc < 12; ++pc)
+        mix ((juce::int64) processor.getNoteState (pc));
+
+    for (int v = 0; v < params::numHarmonyVoices; ++v)
+    {
+        mix (*processor.apvts.getRawParameterValue (params::harmonyID (params::harmEnable, v)) > 0.5f ? 1 : 0);
+        mix ((juce::int64) *processor.apvts.getRawParameterValue (params::harmonyID (params::harmDegrees, v)));
+    }
+
+    if (h == shownReadoutSignature)
+        return;
+
+    shownReadoutSignature = h;
     repaint (chordBounds);
 
     for (const auto& r : voiceReadouts)

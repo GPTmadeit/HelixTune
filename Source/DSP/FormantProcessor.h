@@ -44,6 +44,10 @@ public:
 
     void process (float* data, int numSamples, int channel) noexcept;
 
+    /** Makes one channel's filter history a copy of another's, for when a
+        stereo pair that was rendered as one splits into two. */
+    void copyChannelState (int from, int to) noexcept;
+
 private:
     void levinsonDurbin() noexcept;
     void computeEnvelope() noexcept;
@@ -56,6 +60,8 @@ private:
     double fs = 44100.0;
     int numCh = 2;
     bool bypassed = true;
+    bool targetIsIdentity = true;            // the filter being eased toward is a unit impulse
+    bool tapsAreIdentity = true;             // and the live taps have arrived there
     float lastRatio = 1.0f;
 
     juce::dsp::FFT fft { 9 };

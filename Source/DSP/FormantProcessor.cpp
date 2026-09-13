@@ -49,8 +49,20 @@ void FormantProcessor::reset() noexcept
     taps[(size_t) (firLength / 2)] = 1.0f;
     targetTaps[(size_t) (firLength / 2)] = 1.0f;
 
+    targetIsIdentity = true;
+    tapsAreIdentity = true;
     bypassed = true;
     lastRatio = 1.0f;
+}
+
+void FormantProcessor::copyChannelState (int from, int to) noexcept
+{
+    if (from == to || from < 0 || to < 0 || from >= numCh || to >= numCh)
+        return;
+
+    // Same length on both sides, so this copies into existing storage.
+    delayLine[(size_t) to] = delayLine[(size_t) from];
+    delayPos[(size_t) to] = delayPos[(size_t) from];
 }
 
 void FormantProcessor::levinsonDurbin() noexcept
@@ -109,6 +121,16 @@ void FormantProcessor::computeEnvelope() noexcept
 
 void FormantProcessor::analyse (const float* frame, int numSamples) noexcept
 {
+    // With no envelope move asked for, the correction filter is a unit impulse
+    // whatever the envelope is, so there is nothing to estimate. That is the
+    // usual state - formant correction on, throat length at 1 - and skipping
+    // it here takes the whole LPC analysis off the hop.
+    if (bypassed)
+    {
+        buildFilter (1.0f);
+        return;
+    }
+
     const int n = juce::jmin (numSamples, analysisLen);
     const int offset = numSamples - n;
 
@@ -158,9 +180,11 @@ void FormantProcessor::buildFilter (float ratio) noexcept
     {
         std::fill (targetTaps.begin(), targetTaps.end(), 0.0f);
         targetTaps[(size_t) (firLength / 2)] = 1.0f;
+        targetIsIdentity = true;
         return;
     }
 
+    targetIsIdentity = false;
     const int half = fftSize / 2;
 
     // R(f) = |A(f)| / |A(f / ratio)|.
@@ -238,19 +262,58 @@ void FormantProcessor::process (float* data, int numSamples, int channel) noexce
     if (channel >= numCh)
         return;
 
+    const int centre = firLength / 2;
+
     // Ease toward the new filter. Swapping taps outright on every hop clicks.
     // Only once per block, not once per channel, or stereo would smooth twice
     // as fast as mono.
     if (channel == 0)
-        for (size_t i = 0; i < taps.size(); ++i)
-            taps[i] += (targetTaps[i] - taps[i]) * 0.35f;
+    {
+        float deviation = 0.0f;
 
-    // Deliberately no bypass shortcut: at ratio 1 the taps converge to a unit
-    // impulse at the centre, which is a pure delay of firLength/2. Skipping the
-    // convolution instead would drop that delay and shift the audio in time the
-    // moment the ratio crossed 1.0.
+        for (int i = 0; i < firLength; ++i)
+        {
+            taps[(size_t) i] += (targetTaps[(size_t) i] - taps[(size_t) i]) * 0.35f;
+            deviation = juce::jmax (deviation, std::abs (taps[(size_t) i] - (i == centre ? 1.0f : 0.0f)));
+        }
+
+        // Settled onto a unit impulse: snap exactly, so the convolution below
+        // can be replaced by the pure delay it has become.
+        tapsAreIdentity = targetIsIdentity && deviation < 1.0e-6f;
+
+        if (tapsAreIdentity)
+        {
+            std::fill (taps.begin(), taps.end(), 0.0f);
+            taps[(size_t) centre] = 1.0f;
+        }
+    }
+
     auto& line = delayLine[(size_t) channel];
     int pos = delayPos[(size_t) channel];
+
+    // Still a delay, never a bypass: the filter's firLength/2 latency is part
+    // of what the host was told, and dropping it the moment the ratio reached
+    // 1.0 would shift the audio in time. Reading the tap-centre sample is
+    // exactly what the convolution computes with identity taps.
+    if (tapsAreIdentity)
+    {
+        for (int n = 0; n < numSamples; ++n)
+        {
+            line[(size_t) pos] = data[n];
+
+            int readPos = pos - centre;
+            if (readPos < 0)
+                readPos += firLength;
+
+            data[n] = line[(size_t) readPos];
+
+            if (++pos >= firLength)
+                pos = 0;
+        }
+
+        delayPos[(size_t) channel] = pos;
+        return;
+    }
 
     for (int n = 0; n < numSamples; ++n)
     {

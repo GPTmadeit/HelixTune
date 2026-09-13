@@ -59,9 +59,15 @@ void PitchDetector::prepare (double sampleRate)
         c.window    = c.tauMax;
         c.frameSize = c.window + c.tauMax;
 
-        // Linear correlation needs fftSize >= len(a) + len(b) - 1.
+        // Only non-negative lags up to tauMax are ever read. The transform is
+        // circular, so a lag tau sums frame[(j + tau) mod N] * frame[j] over
+        // j < window - and j + tau stays below window + tauMax == frameSize.
+        // With N >= frameSize nothing wraps, so the result is exact. Sizing for
+        // the full linear correlation (frameSize + window) would be exact too,
+        // but doubles the transform for lags that are thrown away, and this is
+        // the most expensive thing the plugin does on every hop.
         int order = 1;
-        while ((1 << order) < c.frameSize + c.window)
+        while ((1 << order) < c.frameSize)
             ++order;
 
         c.fftSize = 1 << order;

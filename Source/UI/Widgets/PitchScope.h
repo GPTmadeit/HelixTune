@@ -44,6 +44,7 @@ private:
     float lastCents = 0.0f;
     float lastNote = -1.0f;
     bool  lastVoiced = false;
+    bool  framesArrived = false;     // since the last repaint
 
     static constexpr float gutterWidth = 34.0f;
     static constexpr float meterWidth  = 92.0f;

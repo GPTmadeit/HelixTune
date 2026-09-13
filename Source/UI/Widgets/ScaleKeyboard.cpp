@@ -35,11 +35,26 @@ void ScaleKeyboard::setLiveNote (float midiNote, bool voiced)
 
 void ScaleKeyboard::timerCallback()
 {
+    const bool wasPulsing = livePulse > 0.0f;
     livePulse = juce::jmax (0.0f, livePulse - 0.06f);
 
-    // Repaint unconditionally: the key and scale parameters can change from the
-    // host with no signal present, and this view has to follow them.
-    repaint();
+    if (! isShowing())
+        return;
+
+    // The key and scale can change from host automation with no signal
+    // present, so they are compared on every tick - but the keys are only
+    // redrawn when one of them, a note state, or the live pulse has moved.
+    juce::uint64 signature = (juce::uint64) (int) *processor.apvts.getRawParameterValue (params::key);
+    signature |= (juce::uint64) (int) *processor.apvts.getRawParameterValue (params::scale) << 8;
+
+    for (int pc = 0; pc < 12; ++pc)
+        signature |= (juce::uint64) (int) processor.getNoteState (pc) << (16 + pc * 2);
+
+    if (signature != shownSignature || wasPulsing)
+    {
+        shownSignature = signature;
+        repaint();
+    }
 }
 
 bool ScaleKeyboard::isInScale (int pc) const

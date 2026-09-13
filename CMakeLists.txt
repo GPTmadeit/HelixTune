@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(HelixTune VERSION 1.1.1 LANGUAGES C CXX)
+project(HelixTune VERSION 1.1.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -240,3 +240,49 @@ target_link_libraries(HelixTunePresetTest PRIVATE
     juce::juce_recommended_warning_flags)
 
 add_test(NAME presets COMMAND HelixTunePresetTest)
+
+# ---------------------------------------------------------------------------
+# Performance
+# ---------------------------------------------------------------------------
+# Worst-case buffer times as well as averages, because one late buffer is a pop.
+# Same optimisation flags as the plugin so the numbers carry over. Not a test:
+# timings depend on the machine.
+juce_add_console_app(HelixTuneBench PRODUCT_NAME "HelixTuneBench")
+
+target_sources(HelixTuneBench PRIVATE
+    Tests/Benchmark.cpp
+    Source/DSP/PitchDetector.cpp
+    Source/DSP/PitchStabilizer.cpp
+    Source/DSP/PsolaShifter.cpp
+    Source/DSP/FormantProcessor.cpp
+    Source/DSP/KeyDetector.cpp
+    Source/DSP/TransientGuard.cpp
+    Source/DSP/HarmonyEngine.cpp
+    Source/DSP/ScaleQuantizer.cpp
+    Source/DSP/RetuneEngine.cpp
+    Source/DSP/VibratoGenerator.cpp
+    Source/DSP/CorrectionEngine.cpp
+    Source/Model/PitchTrack.cpp
+    Source/Model/GraphModel.cpp)
+
+target_include_directories(HelixTuneBench PRIVATE Source)
+
+target_compile_definitions(HelixTuneBench PRIVATE
+    JUCE_WEB_BROWSER=0
+    JUCE_USE_CURL=0
+    JUCE_STANDALONE_APPLICATION=1)
+
+target_link_libraries(HelixTuneBench PRIVATE
+    juce::juce_dsp
+    juce::juce_audio_basics
+    juce::juce_data_structures
+    PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_lto_flags
+    juce::juce_recommended_warning_flags)
+
+if (MSVC)
+    target_compile_options(HelixTuneBench PRIVATE /fp:fast)
+else()
+    target_compile_options(HelixTuneBench PRIVATE -ffast-math)
+endif()

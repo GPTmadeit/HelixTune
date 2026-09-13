@@ -64,13 +64,15 @@ public:
     void updateTargets (float leadMidi, float detectedMidi, bool voiced,
                         const ScaleQuantizer& scale, const Params& p) noexcept;
 
-    /** Renders the enabled voices and sums them into the stereo output. */
+    /** Renders the enabled voices and sums them into the stereo output. Only
+        voices that are on, or still fading out, do any work. */
     void process (const float* monoInput, float* left, float* right,
                   int numSamples, const Params& p) noexcept;
 
 private:
     struct Voice
     {
+        bool running = false;       // shifter and delay line are live
         PsolaShifter shifter;
         std::vector<float> scratch;
         std::vector<float> delayLine;

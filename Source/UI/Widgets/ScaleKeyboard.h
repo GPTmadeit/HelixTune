@@ -47,6 +47,7 @@ private:
     bool  liveVoiced = false;
     float livePulse = 0.0f;      // decays so a stopped note fades rather than snapping off
     int   hoveredClass = -1;
+    juce::uint64 shownSignature = ~(juce::uint64) 0;   // key, scale and note states last drawn
 
     static constexpr float legendHeight = 16.0f;
 

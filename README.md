@@ -31,7 +31,7 @@ key.
 
 It is fast enough to sit on a track and accurate enough to trust: **corrected
 pitch lands within 0.1 cents of target**, and the whole chain costs about
-**5% of one CPU core**.
+**1.5% of one CPU core** — under 4% with four harmony voices running.
 
 <table>
 <tr>
@@ -80,6 +80,17 @@ Copy the `HELIX Tune.vst3` folder to:
 ```
 
 Then add that folder to your DAW's plugin search paths.
+</details>
+
+<details>
+<summary><b>Pops or crackles in a big session?</b></summary>
+
+HELIX allocates the few megabytes it needs when it loads, so RAM is not what
+runs out. A pop means the CPU did not finish an audio buffer before its
+deadline. In FL Studio, raise the buffer in **Options → Audio settings** (512 or
+more while mixing) and leave multithreaded processing on. In HELIX, pick a
+specific **Input Type** rather than Generic when you know the singer's range:
+Generic searches every range at once and costs about three times as much.
 </details>
 
 ---
@@ -284,7 +295,7 @@ exactly the total — a true crossfade, not a comb filter.
 Two independent layers, because they catch different things.
 
 **`HelixTuneDspTest`** — a console target over the same DSP sources that
-measures real numbers off real signals. **72 checks, all passing:**
+measures real numbers off real signals. **83 checks, all passing:**
 
 | Check | Result |
 |---|---|
@@ -300,6 +311,9 @@ measures real numbers off real signals. **72 checks, all passing:**
 | Correction Amount 50% on a −40 cent note | leaves **−19.99 cents**, as asked; transpose unaffected at 0% |
 | Note Transition 1/16 at 120 / 60 BPM | lands in **127.7 / 249.6 ms** against 125 / 250 (5.8 ms analysis hop); tracks its S-curve to 0.00 cents |
 | harmony master switch off, four voices set up | output **bit-identical** to no harmony |
+| harmony voice switched off, then on, then off | **bit-identical** before, and again 200 ms after — idle voices do no work |
+| mono source on a stereo track, rendered once | **bit-identical** to rendering both channels, across a switch to true stereo |
+| 88.2 / 96 / 192 kHz, detection on a decimated copy | 429.9 Hz → A440 within **0.02 cents** |
 | diatonic intervals | exact — 3rd over tonic = 4 st, over 2nd = 3 st |
 | harmony render, A3 +3rd in C | **C4, 0.0 cents**; hard pan L 0.234 / R 0.000 |
 | Auto-Key | C major (0.90 confidence), A minor |
@@ -311,14 +325,24 @@ measures real numbers off real signals. **72 checks, all passing:**
 **`HelixTunePresetTest`** drives the real processor rather than the DSP
 classes: every factory preset loads twice cleanly, a fresh instance starts with
 harmony off, and a session saved by 1.0.x reopens with harmony exactly as it
-sounded. **14 checks, all passing.**
+sounded, and the updater refuses anything but this repository's own installer
+with a matching SHA-256. **21 checks, all passing.**
 
-Throughput, stereo at 44.1 kHz, 512-sample blocks:
+**`HelixTuneBench`** — where the audio thread's time goes. Average CPU is the
+wrong number for a plugin on its own: every buffer has a deadline, and one late
+buffer is a pop however idle the rest were. So it reports the slowest buffers
+as well. Stereo, 44.1 kHz, a voice-like input with vibrato and breath:
 
-| | real-time factor | one core |
-|---|---|---|
-| correction only | 19.2× | **5.2%** |
-| correction + 4 harmony voices | 13.7× | **7.3%** |
+| | one core | slowest buffer, 64 samples | slowest buffer, 512 samples |
+|---|---|---|---|
+| correction, Alto/Tenor | **1.5%** | 17% of its deadline | 3% |
+| + throat 1.2 and 4 harmony voices | **3.7%** | 25% | 6% |
+| correction, Generic | **5.7%** | 46% | 9% |
+| Generic + throat and 4 harmony voices | **7.9%** | 58% | 12% |
+
+Before 1.1.2 the Generic rows used 14% and 18% of a core, and their slowest
+64-sample buffers took 105% and 199% of the deadline — audible pops. Run it on
+your own machine to see where you stand.
 
 **`pluginval`** — passes [pluginval](https://github.com/Tracktion/pluginval) at
 **strictness 10**, 25 test groups, zero failures: editor open/close while
@@ -351,7 +375,9 @@ letting thousands of object files sync is slow and pointless.
 |---|---|
 | `HelixTune_VST3` | the plugin |
 | `HelixTune_Standalone` | standalone app with its own audio device picker |
-| `HelixTuneDspTest` | the 44 offline checks, also runnable via `ctest` |
+| `HelixTuneDspTest` | the 83 offline checks, also runnable via `ctest` |
+| `HelixTunePresetTest` | processor, preset and updater checks, also via `ctest` |
+| `HelixTuneBench` | average and worst-case buffer timings on your machine |
 | `HelixTuneBanner` | renders the artwork in `docs/` from the plugin's own palette |
 
 To skip the JUCE download if you already have a checkout:
@@ -422,6 +448,7 @@ Source/
   PluginEditor.*         header, presets, updater, mode switching
   DSP/
     PitchDetector.*      YIN + FFT difference function + candidate lattice
+    AnalysisDecimator.h  half-band decimation for detection above 64 kHz
     PitchStabilizer.*    Viterbi tracking over the lattice
     PsolaShifter.*       TD-PSOLA, epoch refinement
     FormantProcessor.*   LPC envelope estimation and correction filter
@@ -434,7 +461,9 @@ Source/
     CorrectionEngine.*   hop scheduling, ties the chain together
   Model/                 parameters, pitch track, graph model, presets, updater
   UI/                    look and feel, widgets, the three panels
-Tests/DspTest.cpp        44 offline checks + throughput report
+Tests/DspTest.cpp        83 offline checks + throughput report
+Tests/PresetTest.cpp     processor, preset and updater checks
+Tests/Benchmark.cpp      average and worst-case buffer timings
 Tools/BannerRenderer.cpp repository artwork
 packaging/HelixTune.iss  Windows installer
 ```

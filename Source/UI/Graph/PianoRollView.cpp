@@ -89,6 +89,11 @@ void PianoRollView::pushFrames (const std::vector<PitchFrame>& frames)
 
 void PianoRollView::timerCallback()
 {
+    // Behind another mode: the capture carries on through pushFrames, and
+    // there is nothing on screen to scroll or redraw.
+    if (! isShowing())
+        return;
+
     if (autoScroll && processor.isTransportPlaying())
     {
         const double t = processor.getPlayheadSeconds();

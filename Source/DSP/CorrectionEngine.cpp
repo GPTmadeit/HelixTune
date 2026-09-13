@@ -8,6 +8,24 @@ namespace helix
 
 static constexpr float kLowestSupportedHz = 32.0f;   // bass instrument range
 
+/** Shifts @p count new samples onto the end of a fixed-length history. */
+static void slideInto (std::vector<float>& history, const float* src, int count) noexcept
+{
+    const int size = (int) history.size();
+
+    if (count <= 0 || size <= 0)
+        return;
+
+    if (count >= size)
+    {
+        std::copy (src + (count - size), src + count, history.begin());
+        return;
+    }
+
+    std::memmove (history.data(), history.data() + count, (size_t) (size - count) * sizeof (float));
+    std::copy (src, src + count, history.begin() + (size - count));
+}
+
 void CorrectionEngine::prepare (double sampleRate, int maxBlockSize, int numChannels)
 {
     fs = sampleRate;
@@ -22,7 +40,12 @@ void CorrectionEngine::prepare (double sampleRate, int maxBlockSize, int numChan
     hopSize = juce::jlimit (128, 1024, hop);
     hopCounter = 0;
 
-    detector.prepare (sampleRate);
+    // Above 64 kHz the detector hears a decimated copy of the input. Its cost
+    // follows the sample rate and nothing it measures lives above 20 kHz.
+    analysisDecimation = AnalysisDecimator::factorFor (sampleRate);
+    decimator.prepare (analysisDecimation);
+
+    detector.prepare (sampleRate / (double) analysisDecimation);
     stabilizer.prepare (sampleRate, hopSize);
     retune.prepare (sampleRate, hopSize);
     vibrato.prepare (sampleRate, hopSize);
@@ -38,7 +61,12 @@ void CorrectionEngine::prepare (double sampleRate, int maxBlockSize, int numChan
     mono.assign ((size_t) juce::jmax (1, maxBlockSize), 0.0f);
     harmonyL.assign ((size_t) juce::jmax (1, maxBlockSize), 0.0f);
     harmonyR.assign ((size_t) juce::jmax (1, maxBlockSize), 0.0f);
-    history.assign ((size_t) detector.getMaxFrameSize(), 0.0f);
+
+    // The session-rate history covers the same stretch of time as the
+    // detector's frame, because the formant analysis reads that span.
+    history.assign ((size_t) juce::jmax (hopSize, detector.getMaxFrameSize() * analysisDecimation), 0.0f);
+    detHistory.assign ((size_t) detector.getMaxFrameSize(), 0.0f);
+    decimScratch.assign ((size_t) hopSize + 4, 0.0f);
 
     latency = shifters[0].getLatencySamples() + formantProc.getLatencySamples();
 
@@ -71,11 +99,13 @@ void CorrectionEngine::reset() noexcept
     transientGuard.reset();
     formantProc.reset();
     harmony.reset();
+    decimator.reset();
 
     for (auto& s : shifters)
         s.reset();
 
     std::fill (history.begin(), history.end(), 0.0f);
+    std::fill (detHistory.begin(), detHistory.end(), 0.0f);
     for (auto& r : dryRing)
         std::fill (r.begin(), r.end(), 0.0f);
 
@@ -87,6 +117,7 @@ void CorrectionEngine::reset() noexcept
     liveMidi = 0.0f;
     liveVoiced = false;
     harmonyRunning = false;
+    rightFollowsLeft = true;
     lastRms = 0.0f;
 }
 
@@ -154,9 +185,20 @@ void CorrectionEngine::runAnalysisHop (const Settings& s, double hopTime, double
 {
     const int frameSize = detector.getFrameSize();
     const int historySize = (int) history.size();
-    const int offset = historySize - frameSize;
 
-    const auto raw = detector.process (history.data() + offset);
+    // At high sample rates the detector reads its decimated copy; everything
+    // else in the hop works at the session rate.
+    const float* detectorFrame = analysisDecimation > 1
+                               ? detHistory.data() + ((int) detHistory.size() - frameSize)
+                               : history.data() + (historySize - frameSize);
+
+    auto raw = detector.process (detectorFrame);
+
+    // Candidate periods come back in the detector's own samples. Nothing
+    // downstream should have to know it ran at a different rate.
+    for (int i = 0; i < raw.numCandidates; ++i)
+        raw.candidates[(size_t) i].periodSamples *= (float) analysisDecimation;
+
     const auto det = stabilizer.process (raw, rangeForInputType (s.inputType));
 
     // Consonants are judged on the freshest hop only; a long analysis window
@@ -258,7 +300,9 @@ void CorrectionEngine::runAnalysisHop (const Settings& s, double hopTime, double
 
     curFormantRatio = juce::jlimit (0.5f, 2.0f, formant);
     formantProc.setRatio (curFormantRatio);
-    formantProc.analyse (history.data() + offset, frameSize);
+
+    const int formantSpan = juce::jmin (historySize, frameSize * analysisDecimation);
+    formantProc.analyse (history.data() + (historySize - formantSpan), formantSpan);
 
     curGain = 1.0f + (vo.gain - 1.0f) * correctionScale;
     curVoiced = det.voiced;
@@ -331,39 +375,72 @@ void CorrectionEngine::process (juce::AudioBuffer<float>& buffer,
     std::fill (harmonyL.begin(), harmonyL.begin() + n, 0.0f);
     std::fill (harmonyR.begin(), harmonyR.begin() + n, 0.0f);
 
-    const int historySize = (int) history.size();
+    const bool stereoPair = channels == 2;
     int pos = 0;
 
     while (pos < n)
     {
         const int chunk = juce::jmin (hopSize - hopCounter, n - pos);
 
-        // Slide the analysis history forward by this chunk.
-        if (chunk >= historySize)
+        slideInto (history, mono.data() + pos, chunk);
+
+        if (analysisDecimation > 1)
         {
-            std::copy (mono.begin() + (pos + chunk - historySize), mono.begin() + (pos + chunk),
-                       history.begin());
-        }
-        else
-        {
-            std::memmove (history.data(), history.data() + chunk,
-                          (size_t) (historySize - chunk) * sizeof (float));
-            std::copy (mono.begin() + pos, mono.begin() + (pos + chunk),
-                       history.begin() + (historySize - chunk));
+            const int produced = decimator.process (mono.data() + pos, chunk, decimScratch.data());
+            slideInto (detHistory, decimScratch.data(), produced);
         }
 
         for (int ch = 0; ch < channels; ++ch)
         {
-            auto* data = buffer.getWritePointer (ch);
+            const auto* data = buffer.getReadPointer (ch);
             auto& ring = dryRing[(size_t) ch];
 
             for (int i = 0; i < chunk; ++i)
                 ring[(size_t) ((dryWrite + i) & dryMask)] = data[pos + i];
+        }
 
-            shifters[(size_t) ch].process (data + pos, data + pos, chunk,
-                                           curPitchRatio, 1.0f, curPeriod, curVoiced);
+        // A mono vocal on a stereo track reaches us as two identical channels,
+        // and rendering both would do the most expensive work twice for the
+        // same result. While every sample since the last reset has matched,
+        // the right channel's state is provably the same as the left's, so the
+        // left is rendered once and copied. The first chunk that differs hands
+        // the right channel a copy of that state and it carries on alone - the
+        // output is bit-identical to having rendered both all along.
+        const bool linked = stereoPair && stereoLinkingEnabled && rightFollowsLeft
+                         && std::memcmp (buffer.getReadPointer (0) + pos,
+                                         buffer.getReadPointer (1) + pos,
+                                         (size_t) chunk * sizeof (float)) == 0;
 
-            formantProc.process (data + pos, chunk, ch);
+        if (linked)
+        {
+            auto* left = buffer.getWritePointer (0);
+
+            shifters[0].process (left + pos, left + pos, chunk,
+                                 curPitchRatio, 1.0f, curPeriod, curVoiced);
+            formantProc.process (left + pos, chunk, 0);
+
+            std::memcpy (buffer.getWritePointer (1) + pos, left + pos, (size_t) chunk * sizeof (float));
+        }
+        else
+        {
+            if (stereoPair && rightFollowsLeft)
+            {
+                // Same configuration on both sides, so this copies state into
+                // storage that already exists rather than allocating.
+                shifters[1] = shifters[0];
+                formantProc.copyChannelState (0, 1);
+                rightFollowsLeft = false;
+            }
+
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                auto* data = buffer.getWritePointer (ch);
+
+                shifters[(size_t) ch].process (data + pos, data + pos, chunk,
+                                               curPitchRatio, 1.0f, curPeriod, curVoiced);
+
+                formantProc.process (data + pos, chunk, ch);
+            }
         }
 
         if (s.harmony.anyEnabled)
